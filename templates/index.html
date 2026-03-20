@@ -1,0 +1,1965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iCal Bot Observatory</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+        :root {
+            --ink: #0b1221;
+            --panel: #101b33;
+            --panel-muted: #152242;
+            --accent: #3dd5a8;
+            --accent-strong: #ff8c32;
+            --text: #f5f7ff;
+            --muted: #9fb0d3;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Space Grotesk', 'Fira Sans', 'Avenir Next', sans-serif;
+            background: radial-gradient(120% 120% at 20% 20%, #1f2d4d 0%, #070b12 70%);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 2.5rem 1.25rem 4rem;
+        }
+
+        .hero {
+            max-width: 1200px;
+            margin: 0 auto 2rem;
+            padding: 1.5rem 2rem;
+            border-radius: 18px;
+            background: linear-gradient(120deg, #192c4c, #0f1729 70%);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+        }
+
+        .hero h1 {
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 600;
+            letter-spacing: 0.03em;
+        }
+
+        .hero-title {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem 1rem;
+        }
+
+        .hero p {
+            margin-top: 0.75rem;
+            color: var(--muted);
+            max-width: 620px;
+            line-height: 1.6;
+        }
+
+        main {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            gap: 1.5rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .stat-card {
+            background: var(--panel);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 1.25rem 1.5rem;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.35);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            inset: 1px;
+            border-radius: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            pointer-events: none;
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .stat-value {
+            font-size: 2.25rem;
+            font-weight: 600;
+            margin-top: 0.5rem;
+        }
+
+        .stat-hint {
+            margin-top: 0.35rem;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .stat-split {
+            margin-top: 1rem;
+            display: flex;
+            gap: 0.75rem;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .stat-split span strong {
+            display: block;
+            color: var(--text);
+            font-size: 1.05rem;
+        }
+
+        .event-feed {
+            background: var(--panel);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 18px;
+            padding: 1.5rem 1.75rem 2rem;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+        }
+
+        .feed-header {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .feed-header h2 {
+            font-size: 1.5rem;
+            font-weight: 500;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .feed-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .credentials-panel {
+            background: var(--panel);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 18px;
+            padding: 1.5rem 1.75rem;
+            box-shadow: 0 16px 42px rgba(0, 0, 0, 0.35);
+            display: grid;
+            gap: 1rem;
+        }
+
+        .credentials-panel h2 {
+            font-size: 1.35rem;
+            font-weight: 500;
+        }
+
+        .credentials-panel p {
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .credentials-form {
+            display: grid;
+            gap: 0.75rem;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            align-items: end;
+        }
+
+        .input-field {
+            display: grid;
+            gap: 0.35rem;
+        }
+
+        .input-field label {
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .input-field input {
+            background: rgba(5, 8, 16, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            padding: 0.6rem 0.75rem;
+            color: var(--text);
+            font-size: 0.95rem;
+        }
+
+        .status-pill {
+            font-size: 0.85rem;
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.4rem 0.75rem;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .status-pill.active {
+            color: var(--accent);
+            border: 1px solid rgba(61, 213, 168, 0.35);
+        }
+
+        .filter-chip {
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 999px;
+            padding: 0.35rem 1rem;
+            background: transparent;
+            color: var(--text);
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .filter-chip.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #04140f;
+            font-weight: 600;
+        }
+
+        .db-pill {
+            font-size: 0.85rem;
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.5rem 0.75rem;
+            border-radius: 10px;
+        }
+
+        .footer-pill {
+            display: flex;
+            justify-content: center;
+            margin-top: 2.5rem;
+        }
+
+        .event-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .event-card {
+            border-radius: 14px;
+            padding: 1.25rem 1.5rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            background: var(--panel-muted);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+            cursor: pointer;
+        }
+
+        .event-card--info {
+            border-left: 5px solid var(--accent-strong);
+        }
+
+        .event-card--invite {
+            border-left: 5px solid var(--accent);
+        }
+
+        .event-card h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .event-meta {
+            margin-top: 0.75rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.5rem;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        .status-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            padding: 0.2rem 0.75rem;
+            border-radius: 999px;
+        }
+
+        .status-tag.success {
+            background: rgba(61, 213, 168, 0.15);
+            color: var(--accent);
+        }
+
+        .status-tag.info {
+            background: rgba(255, 140, 50, 0.15);
+            color: var(--accent-strong);
+        }
+
+        .card-actions {
+            margin-top: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .pill-button {
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 999px;
+            padding: 0.35rem 1rem;
+            background: transparent;
+            color: var(--text);
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: border 0.2s ease, background 0.2s ease;
+        }
+
+        .pill-button:hover {
+            border-color: var(--accent);
+        }
+
+        .pill-button.accent {
+            background: var(--accent);
+            color: #04140f;
+            border-color: var(--accent);
+            font-weight: 600;
+        }
+
+        .pill-button.loading,
+        .pill-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .pill-button.alert {
+            border-color: rgba(255, 140, 50, 0.4);
+            color: var(--accent-strong);
+        }
+
+        .pill-button.alert:hover {
+            background: rgba(255, 140, 50, 0.15);
+        }
+
+        .pill-button.warn {
+            border-color: rgba(255, 65, 54, 0.4);
+            color: #ff7b6b;
+        }
+
+        .pill-button.warn:hover {
+            background: rgba(255, 65, 54, 0.12);
+        }
+
+        .modal__actions input,
+        .modal__actions textarea {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 0.45rem 0.75rem;
+            color: var(--text);
+            flex: 1;
+            min-width: 220px;
+            font-family: inherit;
+        }
+
+        .modal__actions textarea {
+            min-height: 72px;
+            resize: vertical;
+        }
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(1, 4, 10, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            z-index: 999;
+        }
+
+        .modal.open {
+            display: flex;
+        }
+
+        .modal__content {
+            background: var(--panel);
+            border-radius: 18px;
+            max-width: 900px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal h3 {
+            margin-bottom: 0.5rem;
+        }
+
+        .modal pre {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 1rem;
+            border-radius: 12px;
+            overflow-x: auto;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        .detail-hint {
+            margin: 0.5rem 0 1.5rem;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+        
+        .decision-log {
+            margin-top: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .decision-log__item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+        }
+
+        .decision-log__title {
+            font-weight: 600;
+        }
+
+        .decision-log__meta {
+            font-size: 0.85rem;
+            color: var(--muted);
+            margin-top: 0.15rem;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .detail-card {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .ics-preview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .ics-preview-card {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 0.75rem 0.9rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .ics-preview-card strong {
+            display: block;
+            font-size: 0.8rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 0.35rem;
+        }
+
+        .ics-preview-card p {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .ics-raw-block {
+            margin-bottom: 1rem;
+        }
+
+        .ics-raw-block summary {
+            cursor: pointer;
+            color: var(--muted);
+            margin-bottom: 0.45rem;
+        }
+
+        .manual-eval-form {
+            display: grid;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .manual-eval-form input,
+        .manual-eval-form textarea {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 0.55rem 0.75rem;
+            color: var(--text);
+            font-family: inherit;
+        }
+
+        .manual-eval-form textarea {
+            min-height: 160px;
+            resize: vertical;
+        }
+
+        .manual-eval-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .detail-card select {
+            width: 100%;
+            margin-top: 0.6rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 0.45rem 0.6rem;
+            color: var(--text);
+        }
+
+        .recipient-picker {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            margin-top: 0.75rem;
+        }
+
+        .recipient-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 999px;
+            padding: 0.35rem 0.6rem;
+            font-size: 0.9rem;
+        }
+
+        .recipient-pill input[type="checkbox"] {
+            accent-color: var(--accent);
+        }
+
+        .modal__actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+        }
+
+        .close-btn {
+            position: absolute;
+            top: 1rem;
+            right: 1.5rem;
+            background: transparent;
+            border: none;
+            color: var(--muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--muted);
+            border: 1px dashed rgba(255, 255, 255, 0.2);
+            border-radius: 14px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        @media (max-width: 640px) {
+            .hero {
+                padding: 1.25rem;
+            }
+            .event-card {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="hero">
+        <div class="hero-title">
+            <h1>iCal Bot Observatory</h1>
+                <div id="credential-summary" class="status-pill hidden">
+                    Credentials are configured in memory.
+                    <button class="pill-button" type="button" onclick="toggleCredentialForm(true)">Change</button>
+                </div>
+        </div>
+        <p>Live view of every email the bot inspected, how the LLM interpreted it, and whether an invite was generated. Use the filters to flip between confirmed events and informational scans.</p>
+    </header>
+
+    <main>
+        <section class="stats-grid">
+            <article class="stat-card">
+                <div class="stat-label">Processed emails</div>
+                <div class="stat-value" id="processed-count">-</div>
+                <div class="stat-hint">Updated every 10s</div>
+            </article>
+            <article class="stat-card">
+                <div class="stat-label">Events detected</div>
+                <div class="stat-value" id="events-count">-</div>
+                <div class="stat-split">
+                    <span><strong id="sent-count">-</strong>Sent</span>
+                    <span><strong id="dryrun-count">-</strong>Dry run</span>
+                </div>
+            </article>
+            <article class="stat-card">
+                <div class="stat-label">Detection rate</div>
+                <div class="stat-value" id="detection-rate">-</div>
+                <div class="stat-hint" id="mode-indicator">Mode: -</div>
+            </article>
+            <article class="stat-card">
+                <div class="stat-label">Pending approvals</div>
+                <div class="stat-value" id="pending-count">-</div>
+                <div class="stat-hint">UI approval required</div>
+            </article>
+            <article class="stat-card">
+                <div class="stat-label">Timeline outlook</div>
+                <div class="stat-split">
+                    <span><strong id="upcoming-count">-</strong>Upcoming</span>
+                    <span><strong id="past-count">-</strong>Past</span>
+                </div>
+                <div class="stat-hint">Last processed: <span id="last-processed">-</span></div>
+            </article>
+        </section>
+
+        <section class="credentials-panel" id="credentials-panel">
+            <div>
+                <h2>Mailbox credentials</h2>
+                <p>Provide the mailbox password once. It is kept in memory only and never written to disk. Use HTTPS if accessing remotely.</p>
+            </div>
+            <div class="status-pill" id="credential-status">Status: unknown</div>
+            <p class="detail-hint" id="credential-message"></p>
+            <div id="credentials-form-wrapper">
+                <form class="credentials-form" onsubmit="event.preventDefault(); submitCredentials();">
+                    <div class="input-field">
+                        <label for="credential-email">Email address (optional override)</label>
+                        <input id="credential-email" type="email" autocomplete="username" placeholder="you@example.com">
+                    </div>
+                    <div class="input-field">
+                        <label for="credential-username">Exchange username (optional)</label>
+                        <input id="credential-username" type="text" autocomplete="username" placeholder="your-exchange-username">
+                    </div>
+                    <div class="input-field">
+                        <label for="credential-password">Mailbox password</label>
+                        <input id="credential-password" type="password" autocomplete="current-password" placeholder="••••••••">
+                    </div>
+                    <div>
+                        <button class="pill-button accent" type="submit">Save credentials</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <section class="event-feed">
+            <div class="feed-header">
+                <div>
+                    <h2>Processing feed</h2>
+                    <div class="filter-group">
+                        <button class="filter-chip active" data-filter="all">All</button>
+                        <button class="filter-chip" data-filter="events">Events only</button>
+                        <button class="filter-chip" data-filter="no_events">No events</button>
+                        <button class="filter-chip" data-filter="pending">Pending</button>
+                    </div>
+                </div>
+                <div class="feed-actions">
+                    <button class="pill-button accent" id="manual-check-btn" type="button" onclick="triggerManualCheck()">Scan Inbox Now</button>
+                    <button class="pill-button" type="button" onclick="openManualEval()">Evaluate pasted email</button>
+                    <button class="pill-button" id="attachment-toggle-btn" type="button" onclick="toggleAttachmentParsing()">Attachments: ON</button>
+                    <div class="db-pill" id="manual-check-pill">Last scan: <span id="last-manual-check">—</span></div>
+                    <div class="db-pill">
+                        DB entries: <span id="db-entries">-</span> · Size: <span id="db-size">-</span>
+                    </div>
+                    <button class="pill-button alert" type="button" onclick="censorDatabase()">Censor stored data</button>
+                    <button class="pill-button warn" type="button" onclick="purgeOldEntries()">Purge 1+ week history</button>
+                </div>
+            </div>
+            <div id="events-list" class="event-list"></div>
+        </section>
+
+
+    <div class="modal" id="details-modal">
+        <div class="modal__content">
+            <button class="close-btn" onclick="closeDetails()">&times;</button>
+            <h2 id="detail-title">Event details</h2>
+            <div id="detail-injection-warning" class="status-tag info" style="display:none; margin-bottom: 0.75rem;">
+                Prompt injection flagged · Review details carefully
+            </div>
+            <div class="detail-grid">
+                <div class="detail-card">
+                    <strong>Subject</strong>
+                    <p id="detail-subject">-</p>
+                </div>
+                <div class="detail-card">
+                    <strong>Sender</strong>
+                    <p id="detail-sender">-</p>
+                </div>
+                <div class="detail-card">
+                    <strong>Recipients</strong>
+                    <div id="recipient-picker" class="recipient-picker"></div>
+                </div>
+                <div class="detail-card">
+                    <strong>Status</strong>
+                    <p id="detail-status">-</p>
+                </div>
+                <div class="detail-card" id="event-candidate-card" style="display:none;">
+                    <strong>Event candidate</strong>
+                    <select id="event-candidate-select"></select>
+                    <p class="detail-hint" id="event-candidate-hint"></p>
+                </div>
+            </div>
+            <h3>LLM prompt</h3>
+            <pre id="detail-llm-prompt"></pre>
+            <h3>LLM response</h3>
+            <pre id="detail-llm-response"></pre>
+            <p class="detail-hint">Raw email bodies are never persisted; inspect the prompt or original mailbox if additional context is required.</p>
+            <h3>ICS preview</h3>
+            <div id="detail-ics-summary" class="ics-preview-grid"></div>
+            <details class="ics-raw-block">
+                <summary>Show raw ICS</summary>
+                <pre id="detail-ics"></pre>
+            </details>
+            <h3>Decision history</h3>
+            <div id="detail-approval-log" class="decision-log"></div>
+            <div class="modal__actions">
+                <input type="text" id="approver-input" placeholder="Your name (optional)">
+                <textarea id="decision-note-input" placeholder="Decision note (optional)"></textarea>
+                <button class="pill-button" onclick="closeDetails()">Close</button>
+                <button class="pill-button warn" id="detail-decline-btn" onclick="declineCurrentEvent()">Decline</button>
+                <button class="pill-button accent" id="detail-approve-btn" onclick="approveCurrentEvent()">Approve &amp; Send</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="manual-eval-modal">
+        <div class="modal__content">
+            <button class="close-btn" onclick="closeManualEval()">&times;</button>
+            <h2>Evaluate pasted email text</h2>
+            <p class="detail-hint">Paste subject/body and run the current LLM extraction prompt without storing anything in history.</p>
+            <div class="manual-eval-form">
+                <input type="text" id="manual-eval-subject" placeholder="Subject (optional)">
+                <input type="text" id="manual-eval-reference" placeholder="Reference timestamp (optional ISO-8601)">
+                <textarea id="manual-eval-body" placeholder="Paste email body here..."></textarea>
+                <div class="manual-eval-actions">
+                    <button class="pill-button" type="button" id="manual-eval-download-btn" onclick="downloadManualEvalIcs()" disabled>Download ICS</button>
+                    <button class="pill-button" type="button" id="manual-eval-send-self-btn" onclick="sendManualEvalIcsToSelf()" disabled>Send to my inbox</button>
+                    <button class="pill-button" type="button" onclick="closeManualEval()">Close</button>
+                    <button class="pill-button accent" id="manual-eval-run-btn" type="button" onclick="evaluateManualEmail()">Evaluate</button>
+                </div>
+            </div>
+            <h3>Result</h3>
+            <p class="detail-hint" id="manual-eval-status">No evaluation run yet.</p>
+            <div id="manual-eval-events" class="detail-grid"></div>
+            <h3>ICS preview</h3>
+            <div id="manual-eval-ics-summary" class="ics-preview-grid"></div>
+            <details class="ics-raw-block">
+                <summary>Show raw ICS</summary>
+                <pre id="manual-eval-ics"></pre>
+            </details>
+            <h3>LLM prompt</h3>
+            <pre id="manual-eval-llm-prompt"></pre>
+            <h3>LLM response</h3>
+            <pre id="manual-eval-llm-response"></pre>
+        </div>
+    </div>
+
+    <script>
+        let currentFilter = 'all';
+        let dashboardConfig = {};
+        let currentDetail = null;
+        let censoring = false;
+        let purging = false;
+        let manualCheckPending = false;
+        let manualEvalPending = false;
+        let manualEvalResult = null;
+        let manualEvalSendPending = false;
+        let statsFailureCount = 0;
+        let credentialsConfigured = false;
+        let credentialMessageTimer = null;
+        let attachmentTogglePending = false;
+
+        function formatDate(value) {
+            if (!value) return '—';
+            return new Date(value).toLocaleString();
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            const exponent = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+            const value = bytes / Math.pow(1024, exponent);
+            return `${value.toFixed(value > 10 ? 0 : 1)} ${units[exponent]}`;
+        }
+
+        function escapeHtml(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function decodeIcsText(value) {
+            if (!value) return '';
+            return String(value)
+                .replace(/\\n/gi, '\n')
+                .replace(/\\,/g, ',')
+                .replace(/\\;/g, ';')
+                .replace(/\\\\/g, '\\');
+        }
+
+        function parseIcsDateValue(value) {
+            if (!value) return null;
+            const text = String(value).trim();
+            let match = text.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/);
+            if (match) {
+                const year = Number(match[1]);
+                const month = Number(match[2]) - 1;
+                const day = Number(match[3]);
+                const hour = Number(match[4]);
+                const minute = Number(match[5]);
+                const second = Number(match[6]);
+                if (match[7] === 'Z') {
+                    return new Date(Date.UTC(year, month, day, hour, minute, second));
+                }
+                return new Date(year, month, day, hour, minute, second);
+            }
+
+            match = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+            if (match) {
+                return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+            }
+
+            const fallback = new Date(text);
+            return Number.isNaN(fallback.getTime()) ? null : fallback;
+        }
+
+        function formatIcsDateValue(value) {
+            const parsed = parseIcsDateValue(value);
+            if (!parsed) {
+                return value ? String(value) : '—';
+            }
+            return parsed.toLocaleString();
+        }
+
+        function parseIcsContent(icsText) {
+            const result = {
+                summary: '',
+                start: '',
+                end: '',
+                location: '',
+                description: '',
+                organizer: '',
+                attendees: [],
+            };
+
+            if (!icsText) {
+                return result;
+            }
+
+            const rawLines = String(icsText).split(/\r?\n/);
+            const unfolded = [];
+            for (const rawLine of rawLines) {
+                const line = rawLine || '';
+                if ((line.startsWith(' ') || line.startsWith('\t')) && unfolded.length) {
+                    unfolded[unfolded.length - 1] += line.trim();
+                } else {
+                    unfolded.push(line.trim());
+                }
+            }
+
+            for (const line of unfolded) {
+                if (!line || !line.includes(':')) {
+                    continue;
+                }
+
+                const separator = line.indexOf(':');
+                const left = line.slice(0, separator);
+                const rawValue = line.slice(separator + 1);
+                const key = left.split(';')[0].toUpperCase();
+                const value = decodeIcsText(rawValue);
+
+                if (key === 'SUMMARY') {
+                    result.summary = value;
+                } else if (key === 'DTSTART') {
+                    result.start = formatIcsDateValue(rawValue);
+                } else if (key === 'DTEND') {
+                    result.end = formatIcsDateValue(rawValue);
+                } else if (key === 'LOCATION') {
+                    result.location = value;
+                } else if (key === 'DESCRIPTION') {
+                    result.description = value;
+                } else if (key === 'ORGANIZER') {
+                    const cnMatch = left.match(/CN=([^;:]+)/i);
+                    const email = rawValue.replace(/^mailto:/i, '');
+                    result.organizer = cnMatch ? `${decodeIcsText(cnMatch[1])} <${email}>` : email;
+                } else if (key === 'ATTENDEE') {
+                    const cnMatch = left.match(/CN=([^;:]+)/i);
+                    const email = rawValue.replace(/^mailto:/i, '');
+                    result.attendees.push(cnMatch ? `${decodeIcsText(cnMatch[1])} <${email}>` : email);
+                }
+            }
+
+            return result;
+        }
+
+        function renderIcsPreview(summaryContainerId, rawContainerId, icsText, emptyMessage = 'No ICS preview available.') {
+            const summaryContainer = document.getElementById(summaryContainerId);
+            const rawContainer = document.getElementById(rawContainerId);
+            if (!summaryContainer || !rawContainer) {
+                return;
+            }
+
+            const rawText = (icsText || '').trim();
+            rawContainer.textContent = rawText || '(no ICS content)';
+
+            if (!rawText) {
+                summaryContainer.innerHTML = `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+                return;
+            }
+
+            const parsed = parseIcsContent(rawText);
+            const cards = [
+                { label: 'Title', value: parsed.summary || '—' },
+                { label: 'Start', value: parsed.start || '—' },
+                { label: 'End', value: parsed.end || '—' },
+                { label: 'Location', value: parsed.location || '—' },
+                { label: 'Organizer', value: parsed.organizer || '—' },
+                { label: 'Attendees', value: parsed.attendees.length ? parsed.attendees.join('\n') : '—' },
+                { label: 'Description', value: parsed.description || '—' },
+            ];
+
+            summaryContainer.innerHTML = cards.map(card => `
+                <div class="ics-preview-card">
+                    <strong>${escapeHtml(card.label)}</strong>
+                    <p>${escapeHtml(card.value)}</p>
+                </div>
+            `).join('');
+        }
+
+        function renderManualEventCandidates(events) {
+            const container = document.getElementById('manual-eval-events');
+            if (!container) {
+                return;
+            }
+            const list = Array.isArray(events) ? events : [];
+            if (!list.length) {
+                container.innerHTML = '<div class="empty-state">No event candidates extracted.</div>';
+                return;
+            }
+
+            container.innerHTML = list.map((event, index) => `
+                <div class="detail-card">
+                    <strong>Candidate ${index + 1}: ${escapeHtml(event.title || 'Untitled event')}</strong>
+                    <p class="detail-hint">Start: ${escapeHtml(formatDate(event.start_datetime))}</p>
+                    <p class="detail-hint">End: ${escapeHtml(formatDate(event.end_datetime))}</p>
+                    <p class="detail-hint">Location: ${escapeHtml(event.location || '—')}</p>
+                    <p>${escapeHtml(event.description || 'No description provided.')}</p>
+                </div>
+            `).join('');
+        }
+
+        function formatActionLabel(action) {
+            if (!action) return 'Unknown';
+            return action
+                .replace(/_/g, ' ')
+                .toLowerCase()
+                .replace(/(^|\s)\w/g, char => char.toUpperCase());
+        }
+
+        function renderDecisionHistory(history) {
+            if (!Array.isArray(history) || history.length === 0) {
+                return '<p class="detail-hint">No decision log yet.</p>';
+            }
+            return history.map(entry => {
+                const label = formatActionLabel(entry.action);
+                const metaParts = [];
+                if (entry.timestamp) {
+                    metaParts.push(formatDate(entry.timestamp));
+                }
+                if (entry.actor) {
+                    metaParts.push(entry.actor);
+                }
+                const meta = metaParts.join(' · ');
+                const note = entry.note ? `<p>${escapeHtml(entry.note)}</p>` : '';
+                return `
+                    <div class="decision-log__item">
+                        <div class="decision-log__title">${escapeHtml(label)}</div>
+                        <div class="decision-log__meta">${escapeHtml(meta)}</div>
+                        ${note}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function isPending(record) {
+            if (!record || !record.approval_required) {
+                return false;
+            }
+            if (record.sent) {
+                return false;
+            }
+            const finalStatuses = ['invite_sent', 'declined', 'send_error', 'dry_run_preview'];
+            const recordStatus = (record.status || '').toLowerCase();
+            if (recordStatus && finalStatuses.includes(recordStatus)) {
+                return false;
+            }
+            const status = (record.approval_status || '').toLowerCase();
+            return !status || status === 'pending';
+        }
+
+        function renderRecipientPicker(recipients) {
+            const container = document.getElementById('recipient-picker');
+            if (!container) return;
+            const list = Array.isArray(recipients) ? recipients.filter(Boolean) : [];
+            if (!list.length) {
+                container.innerHTML = '<p class="detail-hint">No recipients detected.</p>';
+                return;
+            }
+            const allowedDomain = (dashboardConfig.internal_domain || '').toLowerCase();
+            const pickerHtml = list.map((addr, idx) => {
+                const isInternal = allowedDomain ? addr.toLowerCase().endsWith(`@${allowedDomain}`) : true;
+                const checkedAttr = isInternal ? 'checked' : '';
+                return `
+                    <label class="recipient-pill" for="recip-${idx}">
+                        <input type="checkbox" class="recipient-checkbox" id="recip-${idx}" value="${escapeHtml(addr)}" ${checkedAttr}>
+                        ${escapeHtml(addr)}
+                    </label>
+                `;
+            }).join('');
+            let warning = '';
+            if (allowedDomain) {
+                const outside = list.filter(a => !a.toLowerCase().endsWith(`@${allowedDomain}`));
+                if (outside.length) {
+                    warning = `<p class="detail-hint">Warning: Addresses outside ${escapeHtml(allowedDomain)} are unchecked by default.</p>`;
+                }
+            }
+            container.innerHTML = pickerHtml + warning;
+        }
+
+        function renderEventCandidates(candidates, selectedIndex, editable) {
+            const card = document.getElementById('event-candidate-card');
+            const select = document.getElementById('event-candidate-select');
+            const hint = document.getElementById('event-candidate-hint');
+            if (!card || !select || !hint) return;
+
+            const list = Array.isArray(candidates) ? candidates : [];
+            if (!list.length) {
+                card.style.display = 'none';
+                select.innerHTML = '';
+                hint.textContent = '';
+                return;
+            }
+
+            let index = Number.isFinite(Number(selectedIndex)) ? Number(selectedIndex) : 0;
+            if (index < 0 || index >= list.length) index = 0;
+
+            select.innerHTML = list.map((candidate, idx) => {
+                const title = candidate?.title || `Event ${idx + 1}`;
+                const start = candidate?.start_datetime ? formatDate(candidate.start_datetime) : 'No start time';
+                return `<option value="${idx}">${escapeHtml(title)} · ${escapeHtml(start)}</option>`;
+            }).join('');
+            select.value = String(index);
+
+            const multiple = list.length > 1;
+            select.disabled = !editable || !multiple;
+            if (multiple && editable) {
+                hint.textContent = 'Select the event to approve and send.';
+            } else if (multiple) {
+                hint.textContent = 'Multiple candidates detected. Selection is locked because this record is already finalized.';
+            } else {
+                hint.textContent = 'Single event candidate extracted.';
+            }
+
+            card.style.display = 'block';
+        }
+
+        function updateManualCheckUI(data) {
+            const manualBtn = document.getElementById('manual-check-btn');
+            const lastScan = document.getElementById('last-manual-check');
+            const running = Boolean(data.manual_check_running);
+            if (manualBtn) {
+                const blocked = !credentialsConfigured;
+                manualBtn.disabled = running || blocked;
+                manualBtn.classList.toggle('loading', running);
+                if (blocked) {
+                    manualBtn.textContent = 'Set mailbox password';
+                } else {
+                    manualBtn.textContent = running ? 'Checking...' : 'Scan Inbox Now';
+                }
+                manualBtn.title = data.manual_check_error ? `Last error: ${data.manual_check_error}` : '';
+            }
+            if (lastScan) {
+                lastScan.textContent = data.last_manual_check ? formatDate(data.last_manual_check) : '—';
+            }
+            if (!running) {
+                manualCheckPending = false;
+            }
+        }
+
+        function updateAttachmentToggleUI() {
+            const btn = document.getElementById('attachment-toggle-btn');
+            if (!btn) return;
+
+            const enabled = dashboardConfig.attachment_parsing_enabled !== false;
+            btn.disabled = attachmentTogglePending;
+            btn.classList.toggle('loading', attachmentTogglePending);
+            btn.classList.toggle('accent', enabled);
+            btn.textContent = attachmentTogglePending
+                ? 'Saving...'
+                : `Attachments: ${enabled ? 'ON' : 'OFF'}`;
+            btn.title = enabled
+                ? 'Attachment text extraction is enabled'
+                : 'Attachment text extraction is disabled';
+        }
+
+        function toggleAttachmentParsing() {
+            if (attachmentTogglePending) {
+                return;
+            }
+
+            const current = dashboardConfig.attachment_parsing_enabled !== false;
+            attachmentTogglePending = true;
+            updateAttachmentToggleUI();
+
+            fetch('/api/config/attachment-parsing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: !current }),
+            })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Failed to update setting');
+                    }
+                    return payload;
+                })
+                .then(payload => {
+                    dashboardConfig.attachment_parsing_enabled = Boolean(payload.attachment_parsing_enabled);
+                })
+                .catch(err => {
+                    alert(err.message);
+                })
+                .finally(() => {
+                    attachmentTogglePending = false;
+                    updateAttachmentToggleUI();
+                });
+        }
+
+        function updateCredentialStatusUI() {
+            const pill = document.getElementById('credential-status');
+            const panel = document.getElementById('credentials-panel');
+            const summary = document.getElementById('credential-summary');
+            const formWrapper = document.getElementById('credentials-form-wrapper');
+            if (!pill) return;
+            pill.textContent = credentialsConfigured ? 'Status: configured' : 'Status: not set';
+            pill.classList.toggle('active', credentialsConfigured);
+            if (summary) {
+                summary.classList.toggle('hidden', !credentialsConfigured);
+            }
+            if (formWrapper) {
+                formWrapper.classList.toggle('hidden', credentialsConfigured);
+            }
+            if (panel) {
+                panel.classList.toggle('hidden', credentialsConfigured);
+            }
+        }
+
+        function toggleCredentialForm(show) {
+            const summary = document.getElementById('credential-summary');
+            const formWrapper = document.getElementById('credentials-form-wrapper');
+            const panel = document.getElementById('credentials-panel');
+            if (summary) {
+                summary.classList.toggle('hidden', show);
+            }
+            if (formWrapper) {
+                formWrapper.classList.toggle('hidden', !show);
+            }
+            if (panel) {
+                panel.classList.toggle('hidden', !show);
+            }
+        }
+
+
+        function loadCredentialStatus() {
+            const previous = credentialsConfigured;
+            fetch('/api/credentials/status')
+                .then(r => r.json())
+                .then(data => {
+                    credentialsConfigured = Boolean(data.configured);
+                    updateCredentialStatusUI();
+                    if (!previous && credentialsConfigured) {
+                        loadStats();
+                        loadEvents();
+                    }
+                })
+                .catch(() => {
+                    credentialsConfigured = false;
+                    updateCredentialStatusUI();
+                });
+        }
+
+        function setCredentialMessage(message, isError = false) {
+            const el = document.getElementById('credential-message');
+            if (!el) return;
+            el.textContent = message || '';
+            el.style.color = isError ? '#ff9d7a' : 'var(--muted)';
+            if (credentialMessageTimer) {
+                clearTimeout(credentialMessageTimer);
+            }
+            if (message) {
+                credentialMessageTimer = setTimeout(() => {
+                    el.textContent = '';
+                }, 6000);
+            }
+        }
+
+        function submitCredentials() {
+            const passwordInput = document.getElementById('credential-password');
+            const emailInput = document.getElementById('credential-email');
+            const usernameInput = document.getElementById('credential-username');
+            const password = passwordInput ? passwordInput.value.trim() : '';
+            const emailAddress = emailInput ? emailInput.value.trim() : '';
+            const exchangeUsername = usernameInput ? usernameInput.value.trim() : '';
+
+            if (!password) {
+                setCredentialMessage('Please enter the mailbox password.', true);
+                return;
+            }
+
+            fetch('/api/credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    password,
+                    email_address: emailAddress,
+                    exchange_username: exchangeUsername,
+                }),
+            })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Failed to save credentials');
+                    }
+                    return payload;
+                })
+                .then(() => {
+                    if (passwordInput) {
+                        passwordInput.value = '';
+                    }
+                    setCredentialMessage('Credentials saved in memory.');
+                    credentialsConfigured = true;
+                    updateCredentialStatusUI();
+                    toggleCredentialForm(false);
+                    loadStats();
+                    loadEvents();
+                })
+                .catch(err => setCredentialMessage(err.message, true));
+        }
+
+        function setFilter(filter) {
+            currentFilter = filter;
+            document.querySelectorAll('.filter-chip').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.filter === filter);
+            });
+            loadEvents();
+        }
+
+        function loadStats() {
+            if (!credentialsConfigured) {
+                updateCredentialStatusUI();
+                updateManualCheckUI({ manual_check_running: false, last_manual_check: null, manual_check_error: null });
+                return;
+            }
+            fetch('/api/stats')
+                .then(r => r.json())
+                .then(data => {
+                    statsFailureCount = 0;
+                    document.getElementById('processed-count').textContent = data.total_processed ?? data.db_entries ?? '-';
+                    document.getElementById('events-count').textContent = data.events_detected ?? '-';
+                    document.getElementById('sent-count').textContent = data.sent_events ?? '-';
+                    document.getElementById('dryrun-count').textContent = data.dry_run_events ?? '-';
+                    document.getElementById('detection-rate').textContent = data.detection_rate ? `${(data.detection_rate * 100).toFixed(1)}%` : '0%';
+                    const approvalMode = data.auto_approve_mode ? 'Auto-approve' : 'Manual approval';
+                    document.getElementById('mode-indicator').textContent = `Mode: ${data.dry_run_mode ? 'Dry run' : 'Live'} · ${approvalMode}`;
+                    document.getElementById('upcoming-count').textContent = data.upcoming_events ?? '-';
+                    document.getElementById('past-count').textContent = data.past_events ?? '-';
+                    document.getElementById('last-processed').textContent = data.last_processed_at ? formatDate(data.last_processed_at) : '—';
+                    document.getElementById('pending-count').textContent = data.pending_approvals ?? '-';
+                    document.getElementById('db-entries').textContent = data.db_entries ?? '-';
+                    document.getElementById('db-size').textContent = formatBytes(data.db_size_bytes ?? 0);
+                    updateManualCheckUI(data);
+                })
+                .catch(() => {
+                    statsFailureCount += 1;
+                    document.getElementById('mode-indicator').textContent = 'Mode: unreachable';
+                    if (statsFailureCount >= 3) {
+                        location.reload();
+                    }
+                });
+        }
+
+        function renderEventCard(event) {
+            const hasEvent = Boolean(event.has_event);
+            const pendingApproval = isPending(event);
+            const promptInjection = Boolean(event.prompt_injection);
+            const candidateCount = Array.isArray(event.event_candidates) ? event.event_candidates.length : 0;
+            const statusClass = pendingApproval ? 'info' : (hasEvent ? 'success' : 'info');
+            let statusLabel = event.status || (hasEvent ? 'Event detected' : 'No event detected');
+            if (pendingApproval) {
+                statusLabel = 'Awaiting approval';
+            } else if (hasEvent && event.sent) {
+                statusLabel = 'Invite sent';
+            } else if (hasEvent && !event.sent && event.dry_run) {
+                statusLabel = 'Dry-run preview';
+            }
+            if (hasEvent && candidateCount > 1) {
+                statusLabel = `${statusLabel} · ${candidateCount} candidates`;
+            }
+
+            const extraMeta = [];
+            if (event.email_sender) {
+                extraMeta.push(`<span><strong>Sender</strong><br>${event.email_sender}</span>`);
+            }
+            if (event.email_subject) {
+                extraMeta.push(`<span><strong>Subject</strong><br>${event.email_subject}</span>`);
+            }
+            if (hasEvent && event.event_start) {
+                extraMeta.push(`<span><strong>Start</strong><br>${formatDate(event.event_start)}</span>`);
+            }
+            if (hasEvent && event.event_end) {
+                extraMeta.push(`<span><strong>End</strong><br>${formatDate(event.event_end)}</span>`);
+            }
+            if (hasEvent && event.event_location) {
+                extraMeta.push(`<span><strong>Location</strong><br>${event.event_location}</span>`);
+            }
+            if (!hasEvent && event.error) {
+                extraMeta.push(`<span><strong>Error</strong><br>${event.error}</span>`);
+            }
+
+            return `
+                <article class="event-card ${hasEvent ? 'event-card--invite' : 'event-card--info'}" onclick="openEventDetails('${event.email_id || ''}')">
+                    <h3>${hasEvent ? (event.event_title || 'Untitled event') : 'No event extracted'}</h3>
+                    <p>${hasEvent ? (event.event_description || 'No description provided.') : 'The LLM did not detect a calendar-worthy event.'}</p>
+                    <span class="status-tag ${statusClass}">${statusLabel}</span>
+                    ${promptInjection ? '<span class="status-tag info">Prompt injection flagged</span>' : ''}
+                    <div class="event-meta">${extraMeta.join('')}</div>
+                    <div class="card-actions">
+                        <button class="pill-button" onclick="event.stopPropagation(); openEventDetails('${event.email_id || ''}')">Details</button>
+                        ${pendingApproval ? `<button class="pill-button accent" onclick="event.stopPropagation(); openEventDetails('${event.email_id || ''}', true)">Review & Decide</button>` : ''}
+                    </div>
+                </article>
+            `;
+        }
+
+        function loadEvents() {
+            if (!credentialsConfigured) {
+                const container = document.getElementById('events-list');
+                if (container) {
+                    container.innerHTML = '<div class="empty-state">Mailbox credentials are required before loading history.</div>';
+                }
+                return;
+            }
+            fetch(`/api/events?filter=${currentFilter}`)
+                .then(r => r.json())
+                .then(events => {
+                    const container = document.getElementById('events-list');
+                    if (!events.length) {
+                        container.innerHTML = '<div class="empty-state">No records yet for this filter. Trigger a new email to populate the feed.</div>';
+                        return;
+                    }
+                    container.innerHTML = events.map(renderEventCard).join('');
+                })
+                .catch(() => {
+                    document.getElementById('events-list').innerHTML = '<div class="empty-state">Failed to load events.</div>';
+                });
+        }
+
+        function censorDatabase() {
+            if (censoring) {
+                return;
+            }
+            if (!confirm('This will redact stored prompts and drop cached email bodies. Continue?')) {
+                return;
+            }
+            censoring = true;
+            fetch('/api/database/censor', { method: 'POST' })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Censoring failed');
+                    }
+                    return payload;
+                })
+                .then(result => {
+                    const updated = result.records_updated ?? 0;
+                    const prompts = result.prompts_redacted ?? 0;
+                    alert(`Censored ${updated} record${updated === 1 ? '' : 's'} · Redacted prompts: ${prompts}`);
+                    loadStats();
+                    loadEvents();
+                })
+                .catch(err => alert(err.message))
+                .finally(() => {
+                    censoring = false;
+                });
+        }
+
+        function purgeOldEntries() {
+            if (purging) {
+                return;
+            }
+            if (!confirm('Remove records without events older than ~1 week and events whose end date is older than ~1 week?')) {
+                return;
+            }
+            purging = true;
+            fetch('/api/database/purge', { method: 'POST' })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Purge failed');
+                    }
+                    return payload;
+                })
+                .then(result => {
+                    const removed = result.records_deleted ?? 0;
+                    const staleEvents = result.removed_event ?? 0;
+                    const staleInfo = result.removed_no_event ?? 0;
+                    alert(`Deleted ${removed} record${removed === 1 ? '' : 's'} (events: ${staleEvents}, non-events: ${staleInfo})`);
+                    loadStats();
+                    loadEvents();
+                })
+                .catch(err => alert(err.message))
+                .finally(() => {
+                    purging = false;
+                });
+        }
+
+        function triggerManualCheck() {
+            if (manualCheckPending) {
+                return;
+            }
+            manualCheckPending = true;
+            const manualBtn = document.getElementById('manual-check-btn');
+            if (manualBtn) {
+                manualBtn.classList.add('loading');
+                manualBtn.disabled = true;
+                manualBtn.textContent = 'Checking...';
+            }
+            fetch('/api/check-now', { method: 'POST' })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Manual check failed');
+                    }
+                    return payload;
+                })
+                .then(() => {
+                    alert('Manual scan started. The feed will refresh when results arrive.');
+                    setTimeout(() => {
+                        loadStats();
+                        loadEvents();
+                    }, 2000);
+                })
+                .catch(err => {
+                    alert(err.message);
+                    manualCheckPending = false;
+                    if (manualBtn) {
+                        manualBtn.classList.remove('loading');
+                        manualBtn.disabled = false;
+                        manualBtn.textContent = 'Scan Inbox Now';
+                    }
+                });
+        }
+
+        function manualEvalHasIcs() {
+            return Boolean(
+                manualEvalResult
+                && typeof manualEvalResult.ics_content === 'string'
+                && manualEvalResult.ics_content.trim()
+            );
+        }
+
+        function updateManualEvalActions() {
+            const hasIcs = manualEvalHasIcs();
+            const downloadBtn = document.getElementById('manual-eval-download-btn');
+            const sendBtn = document.getElementById('manual-eval-send-self-btn');
+
+            if (downloadBtn) {
+                downloadBtn.disabled = !hasIcs;
+            }
+
+            if (sendBtn) {
+                sendBtn.disabled = !hasIcs || manualEvalSendPending;
+                sendBtn.classList.toggle('loading', manualEvalSendPending);
+                sendBtn.textContent = manualEvalSendPending ? 'Sending...' : 'Send to my inbox';
+            }
+        }
+
+        function downloadManualEvalIcs() {
+            if (!manualEvalHasIcs()) {
+                return;
+            }
+
+            const icsText = manualEvalResult.ics_content.trim();
+            const rawName = (manualEvalResult.selected_event && manualEvalResult.selected_event.title)
+                || manualEvalResult.subject
+                || 'manual-eval';
+            const safeBaseName = String(rawName)
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '') || 'manual-eval';
+
+            const blob = new Blob([icsText], { type: 'text/calendar;charset=utf-8' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${safeBaseName}.ics`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+
+            const status = document.getElementById('manual-eval-status');
+            if (status) {
+                status.textContent = 'ICS file downloaded.';
+            }
+        }
+
+        function sendManualEvalIcsToSelf() {
+            if (manualEvalSendPending || !manualEvalHasIcs()) {
+                return;
+            }
+
+            manualEvalSendPending = true;
+            updateManualEvalActions();
+
+            const status = document.getElementById('manual-eval-status');
+            if (status) {
+                status.textContent = 'Sending ICS to configured inbox...';
+            }
+
+            const fallbackEvent = Array.isArray(manualEvalResult?.events) && manualEvalResult.events.length
+                ? manualEvalResult.events[0]
+                : null;
+
+            fetch('/api/manual-evaluate/send-self', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    subject: manualEvalResult.subject || '(Manual evaluation)',
+                    ics_content: manualEvalResult.ics_content,
+                    selected_event: manualEvalResult.selected_event || fallbackEvent,
+                }),
+            })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Failed to send invite');
+                    }
+                    return payload;
+                })
+                .then(payload => {
+                    const recipients = Array.isArray(payload.send_result?.recipients)
+                        ? payload.send_result.recipients
+                        : [];
+                    const target = recipients.length ? recipients.join(', ') : 'configured inbox';
+                    const sendStatus = payload.send_result?.status;
+                    const message = sendStatus === 'dry_run_preview'
+                        ? `Dry run only: invite preview prepared for ${target}.`
+                        : `Invite sent to ${target}.`;
+                    if (status) {
+                        status.textContent = message;
+                    }
+                    alert(message);
+                })
+                .catch(err => {
+                    const message = `Send failed: ${err.message}`;
+                    if (status) {
+                        status.textContent = message;
+                    }
+                    alert(message);
+                })
+                .finally(() => {
+                    manualEvalSendPending = false;
+                    updateManualEvalActions();
+                });
+        }
+
+        function resetManualEvalOutput() {
+            manualEvalResult = null;
+            manualEvalSendPending = false;
+            const status = document.getElementById('manual-eval-status');
+            if (status) {
+                status.textContent = 'No evaluation run yet.';
+            }
+            renderManualEventCandidates([]);
+            renderIcsPreview('manual-eval-ics-summary', 'manual-eval-ics', '', 'No ICS preview generated yet.');
+            const promptPre = document.getElementById('manual-eval-llm-prompt');
+            const responsePre = document.getElementById('manual-eval-llm-response');
+            if (promptPre) {
+                promptPre.textContent = '(prompt unavailable)';
+            }
+            if (responsePre) {
+                responsePre.textContent = '(response unavailable)';
+            }
+            updateManualEvalActions();
+        }
+
+        function openManualEval() {
+            resetManualEvalOutput();
+            const modal = document.getElementById('manual-eval-modal');
+            if (modal) {
+                modal.classList.add('open');
+            }
+            const bodyInput = document.getElementById('manual-eval-body');
+            if (bodyInput && !bodyInput.value.trim()) {
+                bodyInput.focus();
+            }
+        }
+
+        function closeManualEval() {
+            const modal = document.getElementById('manual-eval-modal');
+            if (modal) {
+                modal.classList.remove('open');
+            }
+        }
+
+        function evaluateManualEmail() {
+            if (manualEvalPending) {
+                return;
+            }
+            const subject = (document.getElementById('manual-eval-subject')?.value || '').trim();
+            const referenceTimestamp = (document.getElementById('manual-eval-reference')?.value || '').trim();
+            const body = (document.getElementById('manual-eval-body')?.value || '').trim();
+            if (!body) {
+                alert('Paste email text before evaluating.');
+                return;
+            }
+
+            const runBtn = document.getElementById('manual-eval-run-btn');
+            manualEvalPending = true;
+            manualEvalResult = null;
+            manualEvalSendPending = false;
+            updateManualEvalActions();
+            if (runBtn) {
+                runBtn.disabled = true;
+                runBtn.classList.add('loading');
+                runBtn.textContent = 'Evaluating...';
+            }
+
+            fetch('/api/manual-evaluate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    subject,
+                    body,
+                    reference_timestamp: referenceTimestamp,
+                }),
+            })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Manual evaluation failed');
+                    }
+                    return payload;
+                })
+                .then(payload => {
+                    manualEvalResult = payload;
+                    updateManualEvalActions();
+
+                    const events = Array.isArray(payload.events) ? payload.events : [];
+                    const statusParts = [];
+                    if (payload.has_event) {
+                        statusParts.push(`Detected ${events.length} event candidate(s).`);
+                    } else {
+                        statusParts.push('No event detected.');
+                    }
+                    if (payload.prompt_injection) {
+                        statusParts.push('Prompt-injection markers detected in pasted text.');
+                    }
+                    if (payload.ics_error) {
+                        statusParts.push(`ICS preview: ${payload.ics_error}`);
+                    }
+
+                    const status = document.getElementById('manual-eval-status');
+                    if (status) {
+                        status.textContent = statusParts.join(' ');
+                    }
+
+                    renderManualEventCandidates(events);
+                    renderIcsPreview(
+                        'manual-eval-ics-summary',
+                        'manual-eval-ics',
+                        payload.ics_content || '',
+                        'No ICS preview generated for this input.'
+                    );
+
+                    document.getElementById('manual-eval-llm-prompt').textContent = payload.llm_prompt || '(prompt unavailable)';
+                    const llmResponse = typeof payload.llm_raw_result === 'object'
+                        ? JSON.stringify(payload.llm_raw_result, null, 2)
+                        : (payload.llm_response || '');
+                    document.getElementById('manual-eval-llm-response').textContent = llmResponse || '(response unavailable)';
+                })
+                .catch(err => {
+                    manualEvalResult = null;
+                    updateManualEvalActions();
+
+                    const status = document.getElementById('manual-eval-status');
+                    if (status) {
+                        status.textContent = `Evaluation failed: ${err.message}`;
+                    }
+                    renderManualEventCandidates([]);
+                    renderIcsPreview('manual-eval-ics-summary', 'manual-eval-ics', '', 'No ICS preview generated.');
+                })
+                .finally(() => {
+                    manualEvalPending = false;
+                    if (runBtn) {
+                        runBtn.disabled = false;
+                        runBtn.classList.remove('loading');
+                        runBtn.textContent = 'Evaluate';
+                    }
+                });
+        }
+
+        function openEventDetails(emailId, focusApproval = false) {
+            if (!emailId) return;
+            fetch(`/api/events/${encodeURIComponent(emailId)}`)
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Failed to load event details');
+                    }
+                    return payload;
+                })
+                .then(record => {
+                    currentDetail = record;
+                    const canDecide = isPending(record);
+                    const injectionWarning = document.getElementById('detail-injection-warning');
+                    if (injectionWarning) {
+                        injectionWarning.style.display = record.prompt_injection ? 'inline-flex' : 'none';
+                    }
+                    document.getElementById('detail-title').textContent = record.event_title || 'Event details';
+                    document.getElementById('detail-subject').textContent = record.email_subject || '—';
+                    document.getElementById('detail-sender').textContent = record.email_sender || '—';
+                    const recipients = Array.isArray(record.email_recipients) && record.email_recipients.length
+                        ? record.email_recipients
+                        : [record.email_sender].filter(Boolean);
+                    renderRecipientPicker(recipients);
+                    renderEventCandidates(record.event_candidates || [], record.selected_event_index || 0, canDecide);
+                    document.getElementById('detail-status').textContent = record.status || (record.has_event ? 'Detected' : 'No event');
+                    document.getElementById('detail-llm-prompt').textContent = record.llm_prompt || '(prompt unavailable)';
+                    const llmResponse = typeof record.llm_raw_result === 'object' ? JSON.stringify(record.llm_raw_result, null, 2) : (record.llm_response || '');
+                    document.getElementById('detail-llm-response').textContent = llmResponse || '(response unavailable)';
+                    renderIcsPreview('detail-ics-summary', 'detail-ics', record.ics_content || '', 'No ICS stored for this event.');
+                    const historyContainer = document.getElementById('detail-approval-log');
+                    historyContainer.innerHTML = renderDecisionHistory(record.approval_history || []);
+                    const approveBtn = document.getElementById('detail-approve-btn');
+                    const declineBtn = document.getElementById('detail-decline-btn');
+                    const approverInput = document.getElementById('approver-input');
+                    const noteInput = document.getElementById('decision-note-input');
+                    approverInput.value = '';
+                    noteInput.value = '';
+                    approveBtn.style.display = canDecide ? 'inline-flex' : 'none';
+                    declineBtn.style.display = canDecide ? 'inline-flex' : 'none';
+                    approverInput.style.display = canDecide ? 'block' : 'none';
+                    noteInput.style.display = canDecide ? 'block' : 'none';
+                    document.getElementById('details-modal').classList.add('open');
+                    if (focusApproval && canDecide) {
+                        const candidateSelect = document.getElementById('event-candidate-select');
+                        if (candidateSelect && !candidateSelect.disabled) {
+                            candidateSelect.focus();
+                        } else {
+                            approveBtn.focus();
+                        }
+                    }
+                })
+                .catch(err => {
+                    alert(`Failed to load event details: ${err.message}`);
+                });
+        }
+
+        function closeDetails() {
+            currentDetail = null;
+            document.getElementById('approver-input').value = '';
+            document.getElementById('decision-note-input').value = '';
+            const picker = document.getElementById('recipient-picker');
+            if (picker) picker.innerHTML = '';
+            const candidateCard = document.getElementById('event-candidate-card');
+            const candidateSelect = document.getElementById('event-candidate-select');
+            const candidateHint = document.getElementById('event-candidate-hint');
+            if (candidateCard) candidateCard.style.display = 'none';
+            if (candidateSelect) candidateSelect.innerHTML = '';
+            if (candidateHint) candidateHint.textContent = '';
+            renderIcsPreview('detail-ics-summary', 'detail-ics', '', 'No ICS preview available.');
+            document.getElementById('details-modal').classList.remove('open');
+        }
+
+        function approveCurrentEvent() {
+            if (!currentDetail) return;
+            const payload = getDecisionPayload();
+            if (!payload.recipients || !payload.recipients.length) {
+                alert('Select at least one recipient before sending.');
+                return;
+            }
+            approveEvent(currentDetail.email_id, payload);
+        }
+
+        function declineCurrentEvent() {
+            if (!currentDetail) return;
+            const payload = getDecisionPayload();
+            declineEvent(currentDetail.email_id, payload);
+        }
+
+        function approveEvent(emailId, payload = {}) {
+            const body = cleanDecisionPayload(payload);
+            fetch(`/api/events/${encodeURIComponent(emailId)}/approve`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+            })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Approval failed');
+                    }
+                    return payload;
+                })
+                .then(() => {
+                    const message = dashboardConfig.dry_run ? 'Dry-run preview stored (no email sent).' : 'Invite queued with disclaimer.';
+                    handleDecisionResult(message);
+                })
+                .catch(err => alert(err.message));
+        }
+
+        function declineEvent(emailId, payload = {}) {
+            const body = cleanDecisionPayload(payload);
+            fetch(`/api/events/${encodeURIComponent(emailId)}/decline`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+            })
+                .then(async response => {
+                    const payload = await response.json();
+                    if (!response.ok) {
+                        throw new Error(payload.error || 'Decline failed');
+                    }
+                    return payload;
+                })
+                .then(() => {
+                    handleDecisionResult('Event declined. No invite will be sent.');
+                })
+                .catch(err => alert(err.message));
+        }
+
+        function getDecisionPayload() {
+            const selectedRecipients = Array.from(document.querySelectorAll('.recipient-checkbox'))
+                .filter(cb => cb.checked)
+                .map(cb => cb.value)
+                .filter(Boolean);
+            const candidateSelect = document.getElementById('event-candidate-select');
+            const selectedEventIndex = candidateSelect && candidateSelect.value !== ''
+                ? Number(candidateSelect.value)
+                : null;
+            return {
+                approver: document.getElementById('approver-input').value.trim(),
+                reason: document.getElementById('decision-note-input').value.trim(),
+                recipients: selectedRecipients,
+                selected_event_index: Number.isFinite(selectedEventIndex) ? selectedEventIndex : null,
+            };
+        }
+
+        function cleanDecisionPayload(payload = {}) {
+            const body = {};
+            if (payload.approver) {
+                body.approver = payload.approver;
+            }
+            if (payload.reason) {
+                body.reason = payload.reason;
+            }
+            if (Array.isArray(payload.recipients) && payload.recipients.length) {
+                body.recipients = payload.recipients;
+            }
+            if (Number.isFinite(payload.selected_event_index)) {
+                body.selected_event_index = payload.selected_event_index;
+            }
+            return JSON.stringify(body);
+        }
+
+        function handleDecisionResult(message) {
+            closeDetails();
+            loadStats();
+            loadEvents();
+            alert(message);
+        }
+
+        document.querySelectorAll('.filter-chip').forEach(btn => {
+            btn.addEventListener('click', () => setFilter(btn.dataset.filter));
+        });
+
+        function loadConfig() {
+            fetch('/api/config')
+                .then(r => r.json())
+                .then(cfg => {
+                    dashboardConfig = cfg;
+                    updateAttachmentToggleUI();
+                })
+                .catch(() => {
+                    if (dashboardConfig.attachment_parsing_enabled === undefined) {
+                        dashboardConfig.attachment_parsing_enabled = true;
+                    }
+                    updateAttachmentToggleUI();
+                });
+        }
+
+        function bootstrap() {
+            loadConfig();
+            loadCredentialStatus();
+            if (credentialsConfigured) {
+                loadStats();
+                loadEvents();
+            }
+        }
+
+        bootstrap();
+        setInterval(() => {
+            loadCredentialStatus();
+            if (credentialsConfigured) {
+                loadStats();
+                loadEvents();
+            }
+        }, 10000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+[project]
+name = "ical-bot"
+version = "0.1.0"
+description = "Automated email to calendar invite system using local LLM"
+readme = "README.md"
+license = "GPL-3.0-only"
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "flask>=3.0.0",
+    "exchangelib>=5.0.0",
+    "pypdf>=4.2.0",
+]
