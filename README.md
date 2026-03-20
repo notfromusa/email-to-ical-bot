@@ -125,6 +125,18 @@ Process current emails and exit:
 python main.py --once
 ```
 
+### Run Backend + Frontend Together
+
+Start both the processing backend and the web dashboard from one command:
+
+```bash
+python run.py
+```
+
+- Backend (email processing) and frontend (Web UI) start together.
+- Open `http://127.0.0.1:5000` in your browser.
+- Use `python run.py --no-web` to run backend only.
+
 ### What Happens
 
 1. Bot connects to your email inbox
@@ -185,14 +197,12 @@ Example (OS-agnostic):
 
 ### Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Email     │────▶│   LLM        │────▶│  Calendar   │
-│   Client    │     │   Analysis   │     │  Generator  │
-└─────────────┘     └──────────────┘     └─────────────┘
-      │                                          │
-      └──────────────────────────────────────────┘
-                  Reply with .ics file
+```mermaid
+flowchart LR
+   EC[Email Client\nIMAP/Exchange] --> LLM[LLM Analysis\nEvent Extraction]
+   LLM --> CG[Calendar Generator\nICS Creation]
+   CG --> SR[Send Reply\nICS Attachment]
+   SR --> MB[Mailbox Thread\nRecipients Receive Invite]
 ```
 
 ### Components
