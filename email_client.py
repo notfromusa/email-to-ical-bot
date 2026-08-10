@@ -226,7 +226,7 @@ class EmailClient:
             # Build a mixed container so we can include both inline calendar part and a file attachment
             msg = MIMEMultipart('mixed')
             msg['From'] = self.email_address
-            msg['Subject'] = f"Re: {original_email['subject']}"
+            msg['Subject'] = f"iCal-Bot: {original_email['subject']}"
 
             recipients = original_email.get('recipients') or []
             if not recipients:
@@ -284,7 +284,7 @@ class EmailClient:
                 logger.info("=" * 60)
                 logger.info("DRY RUN MODE - Email NOT sent")
                 logger.info("To: %s", ', '.join(recipients))
-                logger.info("Subject: Re: %s", original_email.get('subject'))
+                logger.info("Subject: iCal-Bot: %s", original_email.get('subject'))
                 logger.info("Message length: %s chars", len(reply_message))
                 logger.info("Calendar invite attached (size: %s bytes)", len(ics_content))
                 logger.info("=" * 60)

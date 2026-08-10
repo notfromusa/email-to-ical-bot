@@ -287,7 +287,7 @@ class ExchangeClient:
                 logger.info("=" * 60)
                 logger.info("DRY RUN MODE - Email NOT sent")
                 logger.info("To: %s", ', '.join(recipients))
-                logger.info("Subject: Re: %s", original_email.get('subject'))
+                logger.info("Subject: iCal-Bot: %s", original_email.get('subject'))
                 logger.info("Message length: %s chars", len(reply_message))
                 logger.info("Calendar invite attached (size: %s bytes)", len(ics_content))
                 logger.info("=" * 60)
@@ -298,7 +298,7 @@ class ExchangeClient:
             mime_msg = MIMEMultipart('mixed')
             mime_msg['From'] = self.email_address
             mime_msg['To'] = ', '.join(recipients)
-            mime_msg['Subject'] = f"Re: {original_email['subject']}"
+            mime_msg['Subject'] = f"iCal-Bot: {original_email['subject']}"
 
             if original_email.get('message_id'):
                 mime_msg['In-Reply-To'] = original_email['message_id']

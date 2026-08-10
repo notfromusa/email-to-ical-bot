@@ -36,7 +36,7 @@ EXCHANGE_AUTODISCOVER = os.getenv("EXCHANGE_AUTODISCOVER", "true").lower() == "t
 
 # LLM Configuration (Ollama local instance)
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "http://localhost:11434/api/generate")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2")  # or any model you have installed
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma4:26b")  # or any model you have installed
 LLM_DEBUG_DIR = os.getenv("LLM_DEBUG_DIR", "")  # empty disables on-disk debug artifacts
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.15"))
