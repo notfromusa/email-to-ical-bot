@@ -110,6 +110,7 @@ class StorageManager:
             "approval_status": "TEXT",
             "approval_timestamp": "TEXT",
             "approved_by": "TEXT",
+            "sent_event_indices": "TEXT",
         }
         existing = {
             row["name"] for row in conn.execute("PRAGMA table_info('processed_results')")
@@ -180,6 +181,7 @@ class StorageManager:
             "approval_status": approval_status,
             "status": status,
             "error": error,
+            "sent_event_indices": "[]",
         }
 
         if event_data:
@@ -202,14 +204,14 @@ class StorageManager:
                     event_start, event_end, event_location, event_candidates, selected_event_index,
                     llm_prompt, llm_response,
                     llm_raw_result, prompt_injection, ics_preview, ics_content, sent, dry_run,
-                    approval_required, approval_status, status, error
+                    approval_required, approval_status, status, error, sent_event_indices
                 ) VALUES (
                     :email_id, :email_message_id, :email_subject, :email_sender, :email_date,
                     :email_recipients, :email_body, :processed_at, :has_event, :event_title, :event_description,
                     :event_start, :event_end, :event_location, :event_candidates, :selected_event_index,
                     :llm_prompt, :llm_response,
                     :llm_raw_result, :prompt_injection, :ics_preview, :ics_content, :sent, :dry_run,
-                    :approval_required, :approval_status, :status, :error
+                    :approval_required, :approval_status, :status, :error, :sent_event_indices
                 )
                 ON CONFLICT(email_id) DO UPDATE SET
                     email_message_id=excluded.email_message_id,
@@ -288,17 +290,64 @@ class StorageManager:
         event_candidates: Optional[List[Dict[str, Any]]] = None,
         selected_event_index: Optional[int] = None,
         ics_content: Optional[str] = None,
+        email_recipients: Optional[List[str]] = None,
+        action: Optional[str] = None,
     ) -> None:
         timestamp = datetime.utcnow().isoformat()
         ics_preview = None
         if ics_content:
             ics_preview = ics_content[:500] + '...' if len(ics_content) > 500 else ics_content
+
+        existing_sent_indices: List[int] = []
+        raw_candidates = None
+        with self._connect() as conn:
+            existing_row = conn.execute(
+                "SELECT sent_event_indices, event_candidates FROM processed_results WHERE email_id = ?",
+                (email_id,),
+            ).fetchone()
+            if existing_row:
+                if existing_row["sent_event_indices"]:
+                    try:
+                        existing_sent_indices = json.loads(existing_row["sent_event_indices"])
+                        if not isinstance(existing_sent_indices, list):
+                            existing_sent_indices = []
+                    except Exception:
+                        existing_sent_indices = []
+                if not event_candidates and existing_row["event_candidates"]:
+                    try:
+                        raw_candidates = json.loads(existing_row["event_candidates"])
+                    except Exception:
+                        pass
+
+        candidates_list = event_candidates if event_candidates is not None else (raw_candidates or [])
+        total_candidates = len(candidates_list) if isinstance(candidates_list, list) and candidates_list else 1
+
+        if (sent or status == 'dry_run_preview') and selected_event_index is not None:
+            if selected_event_index not in existing_sent_indices:
+                existing_sent_indices.append(selected_event_index)
+            existing_sent_indices.sort()
+
+        all_sent = len(existing_sent_indices) >= total_candidates if total_candidates > 1 else bool(sent or status == 'dry_run_preview')
+
+        if not (sent or status == 'dry_run_preview'):
+            effective_sent = False
+            effective_approval_status = "pending"
+            effective_status = status
+        else:
+            effective_sent = sent and all_sent
+            effective_approval_status = "approved" if all_sent else "pending"
+            if total_candidates > 1 and not all_sent:
+                effective_status = f"partially_sent ({len(existing_sent_indices)}/{total_candidates})"
+            else:
+                effective_status = status
+
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE processed_results
                 SET sent = :sent,
                     status = :status,
+                    sent_event_indices = :sent_event_indices,
                     approval_status = CASE
                         WHEN approval_required = 1 THEN :approval_status
                         ELSE approval_status
@@ -318,16 +367,18 @@ class StorageManager:
                     event_location = COALESCE(:event_location, event_location),
                     event_candidates = COALESCE(:event_candidates, event_candidates),
                     selected_event_index = COALESCE(:selected_event_index, selected_event_index),
+                    email_recipients = COALESCE(:email_recipients, email_recipients),
                     ics_content = COALESCE(:ics_content, ics_content),
                     ics_preview = COALESCE(:ics_preview, ics_preview),
                     error = :error
                 WHERE email_id = :email_id
                 """,
                 {
-                    "sent": int(sent),
-                    "status": status,
-                    "approval_status": "approved" if sent else "pending",
-                    "approval_timestamp": timestamp if sent else None,
+                    "sent": int(effective_sent),
+                    "status": effective_status,
+                    "sent_event_indices": json.dumps(existing_sent_indices),
+                    "approval_status": effective_approval_status,
+                    "approval_timestamp": timestamp if (sent or status == 'dry_run_preview') else None,
                     "approved_by": approver,
                     "event_title": event_data.get('title') if event_data else None,
                     "event_description": event_data.get('description') if event_data else None,
@@ -336,6 +387,7 @@ class StorageManager:
                     "event_location": event_data.get('location') if event_data else None,
                     "event_candidates": self._serialize_raw(event_candidates),
                     "selected_event_index": selected_event_index,
+                    "email_recipients": json.dumps(email_recipients) if email_recipients else None,
                     "ics_content": ics_content,
                     "ics_preview": ics_preview,
                     "error": error,
@@ -344,16 +396,33 @@ class StorageManager:
             )
             conn.commit()
 
-        if sent:
-            action = 'approved'
-            log_note = note
-        elif status == 'dry_run_preview' and not error:
-            action = 'dry_run_preview'
-            log_note = note
+        if sent or status == 'dry_run_preview':
+            effective_action = action or ('approved' if sent else 'dry_run_preview')
+            cand_prefix = f"[Candidate {selected_event_index + 1}/{total_candidates}] " if selected_event_index is not None and total_candidates > 1 else ""
+            log_note = f"{cand_prefix}{note or ''}".strip() or None
         else:
-            action = 'send_error'
+            effective_action = action or 'send_error'
             log_note = error or note
-        self.log_approval_action(email_id, action, actor=approver, note=log_note)
+        self.log_approval_action(email_id, effective_action, actor=approver, note=log_note)
+
+    def reset_for_rescan(self, email_id: str) -> None:
+        """Reset an email's approval and sent state so it can be re-evaluated cleanly."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE processed_results
+                SET sent = 0,
+                    sent_event_indices = '[]',
+                    approval_status = 'pending',
+                    status = 'pending_approval',
+                    approval_timestamp = NULL,
+                    approved_by = NULL,
+                    error = NULL
+                WHERE email_id = ?
+                """,
+                (email_id,),
+            )
+            conn.commit()
 
     def get_stats(self) -> Dict:
         """Compute statistics for dashboard consumption."""
@@ -537,7 +606,7 @@ class StorageManager:
             elif status == "dry_run_preview":
                 normalized = "dry_run"
             elif status == "send_error":
-                normalized = "send_error"
+                normalized = "pending"
             elif status == "pending_approval":
                 normalized = "pending"
 
@@ -555,8 +624,10 @@ class StorageManager:
                     ).fetchone()
                 if last:
                     action = (last[0] or "").lower()
-                    if action in {"approved", "declined", "dry_run_preview", "send_error"}:
+                    if action in {"approved", "declined", "dry_run_preview"}:
                         normalized = "dry_run" if action == "dry_run_preview" else action
+                    elif action == "send_error":
+                        normalized = "pending"
 
             if normalized and normalized != current:
                 updates.append((normalized, email_id))

@@ -1,7 +1,7 @@
 # Environment and credentials
 .env
 *.env
-
+graphify-out/
 # Python
 __pycache__/
 *.py[cod]

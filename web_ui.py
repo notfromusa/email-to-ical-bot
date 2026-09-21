@@ -281,8 +281,17 @@ def _normalize_record(record):
     if candidates and selected_index >= len(candidates):
         selected_index = 0
     normalized['selected_event_index'] = selected_index
-
     normalized['email_recipients'] = _decode_recipient_list(normalized.get('email_recipients'))
+    sent_indices_raw = normalized.get('sent_event_indices')
+    if isinstance(sent_indices_raw, str):
+        try:
+            normalized['sent_event_indices'] = json.loads(sent_indices_raw)
+        except Exception:
+            normalized['sent_event_indices'] = []
+    elif isinstance(sent_indices_raw, list):
+        normalized['sent_event_indices'] = sent_indices_raw
+    else:
+        normalized['sent_event_indices'] = []
     return normalized
 
 
@@ -383,7 +392,7 @@ def _format_send_result_note(result):
     return " | ".join(parts) if parts else None
 
 
-def _send_calendar_invite_from_record(record, recipients_override=None, selected_event_index=None):
+def _send_calendar_invite_from_record(record, recipients_override=None, selected_event_index=None, event_overrides=None):
     mail_client = ExchangeClient() if config.EMAIL_PROTOCOL == "EXCHANGE" else EmailClient()
     recipients = _decode_recipient_list(recipients_override) if recipients_override else _decode_recipient_list(record.get('email_recipients'))
     if not recipients and record.get('email_sender'):
@@ -398,12 +407,16 @@ def _send_calendar_invite_from_record(record, recipients_override=None, selected
         'message_id': record.get('email_message_id') or record.get('email_id'),
         'recipients': recipients,
     }
-    if isinstance(mail_client, ExchangeClient):
+    if hasattr(mail_client, 'get_message_by_id') and callable(getattr(mail_client, 'get_message_by_id')):
         original_msg = mail_client.get_message_by_id(original_email.get('message_id'))
         if original_msg:
             original_email['original_msg'] = original_msg
 
     event_payload, resolved_index = _build_event_payload(record, selected_event_index=selected_event_index)
+    if event_overrides and isinstance(event_overrides, dict):
+        for field in ('title', 'description', 'start_datetime', 'end_datetime', 'location'):
+            if event_overrides.get(field) is not None:
+                event_payload[field] = str(event_overrides[field]).strip()
     reply_message = build_reply_message(event_payload, recipients)
 
     generator = CalendarGenerator()
@@ -492,8 +505,13 @@ def api_approve_event(email_id):
         return jsonify({'error': 'No event data stored for this email'}), 400
     if not record.get('approval_required'):
         return jsonify({'error': 'This event does not require approval'}), 400
-    if record.get('approval_status') and record['approval_status'] != 'pending':
-        return jsonify({'error': 'This event has already been processed'}), 400
+    available_candidates = _decode_event_candidates(record.get('event_candidates'))
+    sent_indices = record.get('sent_event_indices') or []
+    if isinstance(sent_indices, str):
+        try:
+            sent_indices = json.loads(sent_indices)
+        except Exception:
+            sent_indices = []
 
     request_payload = request.get_json(silent=True) or {} if request.is_json else {}
     approver = request_payload.get('approver')
@@ -504,19 +522,32 @@ def api_approve_event(email_id):
         except (TypeError, ValueError):
             return jsonify({'error': 'selected_event_index must be an integer'}), 400
 
-    available_candidates = _decode_event_candidates(record.get('event_candidates'))
     if len(available_candidates) > 1 and selected_event_index is None:
-        return jsonify({'error': 'Select an event candidate before approval'}), 400
+        for idx in range(len(available_candidates)):
+            if idx not in sent_indices:
+                selected_event_index = idx
+                break
+        if selected_event_index is None:
+            selected_event_index = 0
+
+    is_resend = bool(record.get('sent')) or (selected_event_index is not None and selected_event_index in sent_indices)
 
     try:
         recipients_override = request_payload.get('recipients')
+
+        event_overrides = request_payload.get('event_overrides')
 
         send_result, selected_event, resolved_index, ics_content = _send_calendar_invite_from_record(
             record,
             recipients_override=recipients_override,
             selected_event_index=selected_event_index,
+            event_overrides=event_overrides,
         )
+        if available_candidates and resolved_index < len(available_candidates):
+            available_candidates[resolved_index] = dict(selected_event)
         note = _format_send_result_note(send_result)
+        if is_resend:
+            note = f"Re-sent: {note}" if note else "Re-sent invite"
         storage.mark_event_sent(
             email_id,
             status='dry_run_preview' if config.DRY_RUN else 'invite_sent',
@@ -527,16 +558,20 @@ def api_approve_event(email_id):
             event_candidates=available_candidates or None,
             selected_event_index=resolved_index,
             ics_content=ics_content,
+            email_recipients=send_result.get('recipients') if send_result else None,
+            action='resent' if is_resend else None,
         )
+        action_verb = "Re-sent" if is_resend else "Approved and sent"
         if send_result and send_result.get('recipients'):
             app.logger.info(
-                "Approved and sent invite for %s to %s",
+                "%s invite for %s to %s",
+                action_verb,
                 email_id,
                 ', '.join(send_result['recipients']),
             )
         else:
-            app.logger.info("Approved and sent invite for %s", email_id)
-        return jsonify({'ok': True, 'send_result': send_result})
+            app.logger.info("%s invite for %s", action_verb, email_id)
+        return jsonify({'ok': True, 'send_result': send_result, 'is_resend': is_resend})
     except Exception as exc:
         storage.mark_event_sent(
             email_id,
@@ -573,6 +608,136 @@ def api_decline_event(email_id):
     storage.mark_event_declined(email_id, actor=actor, note=reason)
     app.logger.info("Declined event %s", email_id)
     return jsonify({'ok': True})
+
+
+@app.route('/api/events/<email_id>/rescan', methods=['POST'])
+def api_rescan_event(email_id):
+    """Re-fetch the email from the mailbox and re-run LLM event extraction."""
+    if not _credentials_ready():
+        return jsonify({'error': 'Mailbox credentials are not configured'}), 409
+
+    record = storage.get_result(email_id)
+    if not record:
+        return jsonify({'error': 'Event not found'}), 404
+
+    message_id = record.get('email_message_id')
+    subject = record.get('email_subject')
+    sender = record.get('email_sender')
+
+    payload = request.get_json(silent=True) or {} if request.is_json else {}
+    double_check = bool(payload.get('double_check', False))
+    actor = payload.get('approver') or payload.get('actor') or 'User'
+
+    mail_client = ExchangeClient() if config.EMAIL_PROTOCOL == "EXCHANGE" else EmailClient()
+    try:
+        email_data = mail_client.fetch_email_by_id(
+            email_id=email_id,
+            message_id=message_id,
+            subject=subject,
+            sender=sender,
+        )
+    except Exception as exc:
+        app.logger.error("Error fetching email %s from mailbox: %s", email_id, exc)
+        return jsonify({'error': f'Failed to retrieve email from mailbox: {exc}'}), 500
+
+    if not email_data:
+        return jsonify({'error': f'Could not locate this email in your mailbox inbox (ID: {email_id}). It may have been moved, deleted, or is older than the scan window.'}), 404
+
+    try:
+        llm_client = LLMClient()
+        event_data, metadata = llm_client.analyze_email_for_event(
+            email_data['body'],
+            email_data['subject'],
+            reference_timestamp=email_data.get('date'),
+            double_check=double_check,
+        )
+    except Exception as exc:
+        app.logger.error("LLM extraction failed during rescan for %s: %s", email_id, exc)
+        return jsonify({'error': f'LLM extraction failed: {exc}'}), 500
+
+    candidates = _event_candidates_from_event_data(event_data)
+    has_event = bool(candidates)
+    calendar_generator = CalendarGenerator()
+    ics_preview = None
+    ics_content = None
+
+    if has_event:
+        try:
+            recipients = email_data.get('recipients') or ([email_data['sender']] if email_data.get('sender') else None)
+            ics_content = calendar_generator.create_ics_invite(
+                candidates[0],
+                recipients=recipients,
+            )
+            if ics_content:
+                ics_preview = ics_content[:500] + '...' if len(ics_content) > 500 else ics_content
+        except Exception as exc:
+            app.logger.warning("Failed to generate ICS during rescan for %s: %s", email_id, exc)
+
+    storage.reset_for_rescan(email_id)
+    storage.record_result(
+        email_id=email_id,
+        email_message_id=email_data.get('message_id') or message_id,
+        email_subject=email_data.get('subject') or record.get('email_subject'),
+        email_sender=email_data.get('sender') or record.get('email_sender'),
+        email_date=email_data.get('date') or record.get('email_date'),
+        has_event=has_event,
+        event_data=candidates[0] if candidates else None,
+        event_candidates=candidates or None,
+        selected_event_index=0 if candidates else None,
+        ics_preview=ics_preview,
+        ics_content=ics_content,
+        sent=False,
+        dry_run=config.DRY_RUN,
+        status='pending_approval' if has_event else 'no_event',
+        approval_required=True if has_event else False,
+        approval_status='pending' if has_event else None,
+        email_recipients=email_data.get('recipients') or record.get('email_recipients'),
+        llm_prompt=metadata.get('prompt'),
+        llm_response=metadata.get('response_text'),
+        llm_raw_result=metadata.get('raw_result'),
+        prompt_injection=metadata.get('prompt_injection', False),
+    )
+
+    note_text = 'Rescanned email from mailbox'
+    if double_check:
+        note_text += ' with double-check QA loop'
+    storage.log_approval_action(email_id, 'rescanned', actor=actor, note=note_text)
+
+    updated_record = storage.get_result(email_id)
+    return jsonify({
+        'ok': True,
+        'record': _detailed_record(updated_record) if updated_record else None,
+        'message': f"Email successfully rescanned{' with double-check' if double_check else ''}."
+    })
+
+
+@app.route('/api/events/<email_id>/preview-ics', methods=['POST'])
+def api_preview_ics(email_id):
+    """Generate on-the-fly ICS content for edited event preview."""
+    record = storage.get_result(email_id)
+    if not record:
+        return jsonify({'error': 'Event not found'}), 404
+    payload = request.get_json(silent=True) or {} if request.is_json else {}
+    selected_event_index = payload.get('selected_event_index')
+    event_overrides = payload.get('event_overrides')
+    recipients_override = payload.get('recipients')
+
+    recipients = _decode_recipient_list(recipients_override) if recipients_override else _decode_recipient_list(record.get('email_recipients'))
+    if not recipients and record.get('email_sender'):
+        recipients = [record['email_sender']]
+
+    event_payload, _ = _build_event_payload(record, selected_event_index=selected_event_index)
+    if event_overrides and isinstance(event_overrides, dict):
+        for field in ('title', 'description', 'start_datetime', 'end_datetime', 'location'):
+            if event_overrides.get(field) is not None:
+                event_payload[field] = str(event_overrides[field]).strip()
+
+    generator = CalendarGenerator()
+    try:
+        ics_content = generator.create_ics_invite(event_payload, recipients=recipients)
+        return jsonify({'ok': True, 'ics_content': ics_content})
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 @app.route('/api/stats')

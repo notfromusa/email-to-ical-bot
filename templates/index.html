@@ -399,6 +399,7 @@
         }
 
         .modal__content {
+            position: relative;
             background: var(--panel);
             border-radius: 18px;
             max-width: 900px;
@@ -506,6 +507,29 @@
             margin-bottom: 0.45rem;
         }
 
+        .detail-editor-input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.9rem;
+            box-sizing: border-box;
+            transition: border-color 0.15s, background-color 0.15s;
+        }
+        .detail-editor-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            background: rgba(255, 255, 255, 0.08);
+        }
+        .detail-editor-input:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
         .manual-eval-form {
             display: grid;
             gap: 0.75rem;
@@ -566,6 +590,22 @@
             accent-color: var(--accent);
         }
 
+        .recipient-remove-btn {
+            background: transparent;
+            border: none;
+            color: var(--muted);
+            font-size: 1.1rem;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 0.3rem;
+            margin-left: auto;
+            border-radius: 4px;
+            transition: color 0.15s;
+        }
+        .recipient-remove-btn:hover {
+            color: #ef4444;
+        }
+
         .modal__actions {
             display: flex;
             flex-wrap: wrap;
@@ -575,13 +615,23 @@
 
         .close-btn {
             position: absolute;
-            top: 1rem;
+            top: 1.25rem;
             right: 1.5rem;
             background: transparent;
             border: none;
             color: var(--muted);
-            font-size: 1.5rem;
+            font-size: 1.75rem;
+            line-height: 1;
             cursor: pointer;
+            z-index: 10;
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            transition: color 0.15s, background 0.15s;
+        }
+
+        .close-btn:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.08);
         }
 
         .empty-state {
@@ -710,10 +760,13 @@
 
     <div class="modal" id="details-modal">
         <div class="modal__content">
-            <button class="close-btn" onclick="closeDetails()">&times;</button>
+            <button type="button" class="close-btn" onclick="closeDetails()" aria-label="Close modal">&times;</button>
             <h2 id="detail-title">Event details</h2>
             <div id="detail-injection-warning" class="status-tag info" style="display:none; margin-bottom: 0.75rem;">
                 Prompt injection flagged · Review details carefully
+            </div>
+            <div id="detail-error-banner" class="status-tag warn" style="display:none; margin-bottom: 0.75rem; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); padding: 0.5rem 0.75rem; border-radius: 6px;">
+                ⚠️ <span id="detail-error-text">Send failed. You can retry approving and sending.</span>
             </div>
             <div class="detail-grid">
                 <div class="detail-card">
@@ -738,32 +791,69 @@
                     <p class="detail-hint" id="event-candidate-hint"></p>
                 </div>
             </div>
+            <div class="rescan-bar" style="margin-top: 1rem; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 10px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;">
+                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="rescan-double-check">
+                        <strong style="color: var(--text);">Pass 2 Double-Check (LLM Self-QA)</strong>
+                    </label>
+                    <span class="detail-hint" style="margin: 0; font-size: 0.78rem;">Re-reads mailbox message and audits dates, times &amp; participants</span>
+                </div>
+                <button type="button" class="pill-button" id="detail-rescan-btn" onclick="rescanCurrentEmail()">
+                    🔄 Rescan Email
+                </button>
+            </div>
+            <div id="detail-event-editor" style="margin-top: 1rem; margin-bottom: 1rem; padding: 1rem; border-radius: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                    <strong style="font-size: 0.95rem; color: var(--accent);">Event Preview &amp; Edit</strong>
+                    <span id="detail-edit-badge" class="status-tag info" style="font-size: 0.75rem;">Editable preview</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr; gap: 0.75rem;">
+                    <div>
+                        <label for="edit-event-title" style="display:block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem;">Title</label>
+                        <input type="text" id="edit-event-title" class="detail-editor-input">
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                        <div>
+                            <label for="edit-event-start" style="display:block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem;">Start Date &amp; Time (ISO)</label>
+                            <input type="text" id="edit-event-start" class="detail-editor-input" placeholder="YYYY-MM-DDTHH:MM:SS">
+                        </div>
+                        <div>
+                            <label for="edit-event-end" style="display:block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem;">End Date &amp; Time (ISO)</label>
+                            <input type="text" id="edit-event-end" class="detail-editor-input" placeholder="YYYY-MM-DDTHH:MM:SS">
+                        </div>
+                    </div>
+                    <div>
+                        <label for="edit-event-location" style="display:block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem;">Location</label>
+                        <input type="text" id="edit-event-location" class="detail-editor-input" placeholder="Physical location or virtual meeting link">
+                    </div>
+                    <div>
+                        <label for="edit-event-description" style="display:block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem;">Description / Agenda</label>
+                        <textarea id="edit-event-description" class="detail-editor-input" rows="4" style="resize: vertical;" placeholder="Comprehensive event agenda, links, and context"></textarea>
+                    </div>
+                    <pre id="detail-ics" style="display:none;"></pre>
+                </div>
+            </div>
             <h3>LLM prompt</h3>
             <pre id="detail-llm-prompt"></pre>
             <h3>LLM response</h3>
             <pre id="detail-llm-response"></pre>
             <p class="detail-hint">Raw email bodies are never persisted; inspect the prompt or original mailbox if additional context is required.</p>
-            <h3>ICS preview</h3>
-            <div id="detail-ics-summary" class="ics-preview-grid"></div>
-            <details class="ics-raw-block">
-                <summary>Show raw ICS</summary>
-                <pre id="detail-ics"></pre>
-            </details>
             <h3>Decision history</h3>
             <div id="detail-approval-log" class="decision-log"></div>
             <div class="modal__actions">
                 <input type="text" id="approver-input" placeholder="Your name (optional)">
                 <textarea id="decision-note-input" placeholder="Decision note (optional)"></textarea>
-                <button class="pill-button" onclick="closeDetails()">Close</button>
-                <button class="pill-button warn" id="detail-decline-btn" onclick="declineCurrentEvent()">Decline</button>
-                <button class="pill-button accent" id="detail-approve-btn" onclick="approveCurrentEvent()">Approve &amp; Send</button>
+                <button type="button" class="pill-button" onclick="closeDetails()">Close</button>
+                <button type="button" class="pill-button warn" id="detail-decline-btn" onclick="declineCurrentEvent()">Decline</button>
+                <button type="button" class="pill-button accent" id="detail-approve-btn" onclick="approveCurrentEvent()">Approve &amp; Send</button>
             </div>
         </div>
     </div>
 
     <div class="modal" id="manual-eval-modal">
         <div class="modal__content">
-            <button class="close-btn" onclick="closeManualEval()">&times;</button>
+            <button type="button" class="close-btn" onclick="closeManualEval()" aria-label="Close modal">&times;</button>
             <h2>Evaluate pasted email text</h2>
             <p class="detail-hint">Paste subject/body and run the current LLM extraction prompt without storing anything in history.</p>
             <div class="manual-eval-form">
@@ -894,8 +984,8 @@
             for (const rawLine of rawLines) {
                 const line = rawLine || '';
                 if ((line.startsWith(' ') || line.startsWith('\t')) && unfolded.length) {
-                    unfolded[unfolded.length - 1] += line.trim();
-                } else {
+                    unfolded[unfolded.length - 1] += line.slice(1);
+                } else if (line.trim().length > 0) {
                     unfolded.push(line.trim());
                 }
             }
@@ -936,14 +1026,17 @@
         }
 
         function renderIcsPreview(summaryContainerId, rawContainerId, icsText, emptyMessage = 'No ICS preview available.') {
-            const summaryContainer = document.getElementById(summaryContainerId);
-            const rawContainer = document.getElementById(rawContainerId);
-            if (!summaryContainer || !rawContainer) {
-                return;
-            }
+            const summaryContainer = summaryContainerId ? document.getElementById(summaryContainerId) : null;
+            const rawContainer = rawContainerId ? document.getElementById(rawContainerId) : null;
 
             const rawText = (icsText || '').trim();
-            rawContainer.textContent = rawText || '(no ICS content)';
+            if (rawContainer) {
+                rawContainer.textContent = rawText || '(no ICS content)';
+            }
+
+            if (!summaryContainer) {
+                return;
+            }
 
             if (!rawText) {
                 summaryContainer.innerHTML = `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
@@ -1028,37 +1121,99 @@
             if (!record || !record.approval_required) {
                 return false;
             }
+            const candidates = Array.isArray(record.event_candidates) ? record.event_candidates : [];
+            const sentIndices = Array.isArray(record.sent_event_indices) ? record.sent_event_indices : [];
+            if (candidates.length > 1 && sentIndices.length < candidates.length) {
+                const status = (record.approval_status || '').toLowerCase();
+                return status !== 'declined';
+            }
             if (record.sent) {
                 return false;
             }
-            const finalStatuses = ['invite_sent', 'declined', 'send_error', 'dry_run_preview'];
+            const finalStatuses = ['invite_sent', 'declined', 'dry_run_preview'];
             const recordStatus = (record.status || '').toLowerCase();
             if (recordStatus && finalStatuses.includes(recordStatus)) {
                 return false;
             }
             const status = (record.approval_status || '').toLowerCase();
-            return !status || status === 'pending';
+            return !status || status === 'pending' || status === 'send_error';
         }
 
-        function renderRecipientPicker(recipients) {
-            const container = document.getElementById('recipient-picker');
-            if (!container) return;
-            const list = Array.isArray(recipients) ? recipients.filter(Boolean) : [];
-            if (!list.length) {
-                container.innerHTML = '<p class="detail-hint">No recipients detected.</p>';
+        let currentModalRecipients = [];
+        let manualRecipients = new Set();
+        let currentCheckedRecipients = new Set();
+
+        function onRecipientCheckChanged() {
+            currentCheckedRecipients.clear();
+            document.querySelectorAll('.recipient-checkbox').forEach(cb => {
+                if (cb.checked) {
+                    currentCheckedRecipients.add(cb.value);
+                }
+            });
+            triggerIcsPreviewUpdate();
+        }
+
+        function addManualRecipient() {
+            const input = document.getElementById('new-recipient-input');
+            if (!input) return;
+            const addr = input.value.trim();
+            if (!addr) return;
+            if (!addr.includes('@') || !addr.includes('.') || addr.length < 5) {
+                alert('Please enter a valid email address.');
                 return;
             }
+            if (!currentModalRecipients.includes(addr)) {
+                currentModalRecipients.push(addr);
+                manualRecipients.add(addr);
+                currentCheckedRecipients.add(addr);
+            } else {
+                currentCheckedRecipients.add(addr);
+            }
+            input.value = '';
+            renderRecipientPicker(currentModalRecipients, true);
+            triggerIcsPreviewUpdate();
+        }
+
+        function removeManualRecipient(addr, e) {
+            if (e) e.stopPropagation();
+            currentModalRecipients = currentModalRecipients.filter(a => a !== addr);
+            manualRecipients.delete(addr);
+            currentCheckedRecipients.delete(addr);
+            renderRecipientPicker(currentModalRecipients, true);
+            triggerIcsPreviewUpdate();
+        }
+
+        function renderRecipientPicker(recipients, retainState = false) {
+            const container = document.getElementById('recipient-picker');
+            if (!container) return;
+            if (!retainState) {
+                currentModalRecipients = Array.isArray(recipients) ? Array.from(new Set(recipients.filter(Boolean))) : [];
+                manualRecipients.clear();
+                const allowedDomain = (dashboardConfig.internal_domain || '').toLowerCase();
+                currentCheckedRecipients = new Set(
+                    currentModalRecipients.filter(addr => allowedDomain ? addr.toLowerCase().endsWith(`@${allowedDomain}`) : true)
+                );
+            }
+
             const allowedDomain = (dashboardConfig.internal_domain || '').toLowerCase();
-            const pickerHtml = list.map((addr, idx) => {
-                const isInternal = allowedDomain ? addr.toLowerCase().endsWith(`@${allowedDomain}`) : true;
-                const checkedAttr = isInternal ? 'checked' : '';
-                return `
-                    <label class="recipient-pill" for="recip-${idx}">
-                        <input type="checkbox" class="recipient-checkbox" id="recip-${idx}" value="${escapeHtml(addr)}" ${checkedAttr}>
-                        ${escapeHtml(addr)}
-                    </label>
-                `;
-            }).join('');
+            const list = currentModalRecipients;
+            let pickerHtml = '';
+            if (list.length) {
+                pickerHtml = list.map((addr, idx) => {
+                    const isChecked = currentCheckedRecipients.has(addr);
+                    const isManual = manualRecipients.has(addr);
+                    return `
+                        <label class="recipient-pill" for="recip-${idx}">
+                            <input type="checkbox" class="recipient-checkbox" id="recip-${idx}" value="${escapeHtml(addr)}" ${isChecked ? 'checked' : ''} onchange="onRecipientCheckChanged()">
+                            <span>${escapeHtml(addr)}</span>
+                            ${isManual ? `<button type="button" class="recipient-remove-btn" onclick="removeManualRecipient('${escapeHtml(addr)}', event)" title="Remove recipient">&times;</button>` : ''}
+                        </label>
+                    `;
+                }).join('');
+            } else {
+                pickerHtml = '<p class="detail-hint">No recipients detected.</p>';
+            }
+
             let warning = '';
             if (allowedDomain) {
                 const outside = list.filter(a => !a.toLowerCase().endsWith(`@${allowedDomain}`));
@@ -1066,7 +1221,15 @@
                     warning = `<p class="detail-hint">Warning: Addresses outside ${escapeHtml(allowedDomain)} are unchecked by default.</p>`;
                 }
             }
-            container.innerHTML = pickerHtml + warning;
+
+            const addBarHtml = `
+                <div class="recipient-add-bar" style="display: flex; gap: 0.5rem; margin-top: 0.6rem; align-items: center;">
+                    <input type="email" id="new-recipient-input" placeholder="Add email address..." class="detail-editor-input" style="padding: 0.35rem 0.6rem; font-size: 0.82rem; max-width: 260px;" onkeydown="if(event.key==='Enter'){event.preventDefault();addManualRecipient();}">
+                    <button type="button" class="pill-button" id="add-recipient-btn" onclick="addManualRecipient()" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">+ Add</button>
+                </div>
+            `;
+
+            container.innerHTML = pickerHtml + warning + addBarHtml;
         }
 
         function renderEventCandidates(candidates, selectedIndex, editable) {
@@ -1083,20 +1246,38 @@
                 return;
             }
 
+            const sentIndices = Array.isArray(currentDetail?.sent_event_indices) ? currentDetail.sent_event_indices : [];
             let index = Number.isFinite(Number(selectedIndex)) ? Number(selectedIndex) : 0;
             if (index < 0 || index >= list.length) index = 0;
 
+            if (sentIndices.includes(index)) {
+                for (let i = 0; i < list.length; i++) {
+                    if (!sentIndices.includes(i)) {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+
             select.innerHTML = list.map((candidate, idx) => {
+                const isSent = sentIndices.includes(idx);
                 const title = candidate?.title || `Event ${idx + 1}`;
                 const start = candidate?.start_datetime ? formatDate(candidate.start_datetime) : 'No start time';
-                return `<option value="${idx}">${escapeHtml(title)} · ${escapeHtml(start)}</option>`;
+                const tag = isSent ? '✓ [SENT] ' : '';
+                return `<option value="${idx}" ${isSent ? 'style="color: var(--muted);"' : ''}>${escapeHtml(tag + title)} · ${escapeHtml(start)}</option>`;
             }).join('');
             select.value = String(index);
 
             const multiple = list.length > 1;
-            select.disabled = !editable || !multiple;
-            if (multiple && editable) {
-                hint.textContent = 'Select the event to approve and send.';
+            const allSent = multiple && sentIndices.length >= list.length;
+            select.disabled = !editable && allSent;
+            if (multiple && editable && !allSent) {
+                const remaining = list.length - sentIndices.length;
+                hint.textContent = sentIndices.length > 0
+                    ? `${sentIndices.length} of ${list.length} events sent (${remaining} remaining). Select event candidate to review or send.`
+                    : 'Select the event to approve and send.';
+            } else if (allSent) {
+                hint.textContent = `All ${list.length} event candidates have been sent.`;
             } else if (multiple) {
                 hint.textContent = 'Multiple candidates detected. Selection is locked because this record is already finalized.';
             } else {
@@ -1338,7 +1519,9 @@
             const candidateCount = Array.isArray(event.event_candidates) ? event.event_candidates.length : 0;
             const statusClass = pendingApproval ? 'info' : (hasEvent ? 'success' : 'info');
             let statusLabel = event.status || (hasEvent ? 'Event detected' : 'No event detected');
-            if (pendingApproval) {
+            if (event.status === 'send_error') {
+                statusLabel = 'Send failed · Retry available';
+            } else if (pendingApproval) {
                 statusLabel = 'Awaiting approval';
             } else if (hasEvent && event.sent) {
                 statusLabel = 'Invite sent';
@@ -1641,6 +1824,7 @@
             resetManualEvalOutput();
             const modal = document.getElementById('manual-eval-modal');
             if (modal) {
+                modal.style.display = 'flex';
                 modal.classList.add('open');
             }
             const bodyInput = document.getElementById('manual-eval-body');
@@ -1653,6 +1837,7 @@
             const modal = document.getElementById('manual-eval-modal');
             if (modal) {
                 modal.classList.remove('open');
+                modal.style.display = 'none';
             }
         }
 
@@ -1770,6 +1955,16 @@
                     if (injectionWarning) {
                         injectionWarning.style.display = record.prompt_injection ? 'inline-flex' : 'none';
                     }
+                    const errorBanner = document.getElementById('detail-error-banner');
+                    const errorText = document.getElementById('detail-error-text');
+                    if (errorBanner && errorText) {
+                        if (record.status === 'send_error' || record.error) {
+                            errorText.textContent = `Send failed: ${record.error || 'Unknown error'}. You can retry approving and sending.`;
+                            errorBanner.style.display = 'block';
+                        } else {
+                            errorBanner.style.display = 'none';
+                        }
+                    }
                     document.getElementById('detail-title').textContent = record.event_title || 'Event details';
                     document.getElementById('detail-subject').textContent = record.email_subject || '—';
                     document.getElementById('detail-sender').textContent = record.email_sender || '—';
@@ -1778,11 +1973,24 @@
                         : [record.email_sender].filter(Boolean);
                     renderRecipientPicker(recipients);
                     renderEventCandidates(record.event_candidates || [], record.selected_event_index || 0, canDecide);
+
+                    const doubleCheckCb = document.getElementById('rescan-double-check');
+                    if (doubleCheckCb) doubleCheckCb.checked = false;
+
+                    const candidates = Array.isArray(record.event_candidates) ? record.event_candidates : [];
+                    const candSelect = document.getElementById('event-candidate-select');
+                    const selectedIdx = candSelect && candSelect.value !== '' ? Number(candSelect.value) : Number(record.selected_event_index || 0);
+                    const currentCand = candidates[selectedIdx] || (record.has_event ? record : null);
+                    const sentIndices = Array.isArray(record.sent_event_indices) ? record.sent_event_indices : [];
+                    const isCandidateSent = sentIndices.includes(selectedIdx);
+                    const isAlreadySent = Boolean(record.sent) || isCandidateSent;
+                    populateEventEditor(currentCand, true, isAlreadySent);
+
                     document.getElementById('detail-status').textContent = record.status || (record.has_event ? 'Detected' : 'No event');
                     document.getElementById('detail-llm-prompt').textContent = record.llm_prompt || '(prompt unavailable)';
                     const llmResponse = typeof record.llm_raw_result === 'object' ? JSON.stringify(record.llm_raw_result, null, 2) : (record.llm_response || '');
                     document.getElementById('detail-llm-response').textContent = llmResponse || '(response unavailable)';
-                    renderIcsPreview('detail-ics-summary', 'detail-ics', record.ics_content || '', 'No ICS stored for this event.');
+                    renderIcsPreview(null, 'detail-ics', record.ics_content || '', 'No ICS stored for this event.');
                     const historyContainer = document.getElementById('detail-approval-log');
                     historyContainer.innerHTML = renderDecisionHistory(record.approval_history || []);
                     const approveBtn = document.getElementById('detail-approve-btn');
@@ -1791,11 +1999,17 @@
                     const noteInput = document.getElementById('decision-note-input');
                     approverInput.value = '';
                     noteInput.value = '';
-                    approveBtn.style.display = canDecide ? 'inline-flex' : 'none';
-                    declineBtn.style.display = canDecide ? 'inline-flex' : 'none';
-                    approverInput.style.display = canDecide ? 'block' : 'none';
-                    noteInput.style.display = canDecide ? 'block' : 'none';
-                    document.getElementById('details-modal').classList.add('open');
+                    const hasEvent = Boolean(record.has_event);
+                    approveBtn.style.display = hasEvent ? 'inline-flex' : 'none';
+                    approveBtn.textContent = isAlreadySent ? '🔄 Re-send Invite' : 'Approve & Send';
+                    declineBtn.style.display = (canDecide && !isAlreadySent) ? 'inline-flex' : 'none';
+                    approverInput.style.display = hasEvent ? 'block' : 'none';
+                    noteInput.style.display = hasEvent ? 'block' : 'none';
+                    const modal = document.getElementById('details-modal');
+                    if (modal) {
+                        modal.style.display = 'flex';
+                        modal.classList.add('open');
+                    }
                     if (focusApproval && canDecide) {
                         const candidateSelect = document.getElementById('event-candidate-select');
                         if (candidateSelect && !candidateSelect.disabled) {
@@ -1811,19 +2025,37 @@
         }
 
         function closeDetails() {
-            currentDetail = null;
-            document.getElementById('approver-input').value = '';
-            document.getElementById('decision-note-input').value = '';
-            const picker = document.getElementById('recipient-picker');
-            if (picker) picker.innerHTML = '';
-            const candidateCard = document.getElementById('event-candidate-card');
-            const candidateSelect = document.getElementById('event-candidate-select');
-            const candidateHint = document.getElementById('event-candidate-hint');
-            if (candidateCard) candidateCard.style.display = 'none';
-            if (candidateSelect) candidateSelect.innerHTML = '';
-            if (candidateHint) candidateHint.textContent = '';
-            renderIcsPreview('detail-ics-summary', 'detail-ics', '', 'No ICS preview available.');
-            document.getElementById('details-modal').classList.remove('open');
+            try {
+                currentDetail = null;
+                currentModalRecipients = [];
+                manualRecipients.clear();
+                currentCheckedRecipients.clear();
+                const approver = document.getElementById('approver-input');
+                if (approver) approver.value = '';
+                const note = document.getElementById('decision-note-input');
+                if (note) note.value = '';
+                const errorBanner = document.getElementById('detail-error-banner');
+                if (errorBanner) errorBanner.style.display = 'none';
+                const picker = document.getElementById('recipient-picker');
+                if (picker) picker.innerHTML = '';
+                const candidateCard = document.getElementById('event-candidate-card');
+                const candidateSelect = document.getElementById('event-candidate-select');
+                const candidateHint = document.getElementById('event-candidate-hint');
+                if (candidateCard) candidateCard.style.display = 'none';
+                if (candidateSelect) candidateSelect.innerHTML = '';
+                if (candidateHint) candidateHint.textContent = '';
+                populateEventEditor(null, false);
+                const rawIcs = document.getElementById('detail-ics');
+                if (rawIcs) rawIcs.textContent = '';
+            } catch (err) {
+                console.warn('Error during closeDetails:', err);
+            } finally {
+                const modal = document.getElementById('details-modal');
+                if (modal) {
+                    modal.classList.remove('open');
+                    modal.style.display = 'none';
+                }
+            }
         }
 
         function approveCurrentEvent() {
@@ -1844,6 +2076,11 @@
 
         function approveEvent(emailId, payload = {}) {
             const body = cleanDecisionPayload(payload);
+            const approveBtn = document.getElementById('detail-approve-btn');
+            if (approveBtn) {
+                approveBtn.disabled = true;
+                approveBtn.classList.add('loading');
+            }
             fetch(`/api/events/${encodeURIComponent(emailId)}/approve`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1856,11 +2093,30 @@
                     }
                     return payload;
                 })
-                .then(() => {
-                    const message = dashboardConfig.dry_run ? 'Dry-run preview stored (no email sent).' : 'Invite queued with disclaimer.';
+                .then((payload) => {
+                    const isResend = payload && payload.is_resend;
+                    const message = dashboardConfig.dry_run
+                        ? 'Dry-run preview stored (no email sent).'
+                        : (isResend ? 'Invite re-sent successfully.' : 'Invite queued with disclaimer.');
                     handleDecisionResult(message);
                 })
-                .catch(err => alert(err.message));
+                .catch(err => {
+                    const errorBanner = document.getElementById('detail-error-banner');
+                    const errorText = document.getElementById('detail-error-text');
+                    if (errorBanner && errorText) {
+                        errorText.textContent = `Send failed: ${err.message}. You can retry approving and sending.`;
+                        errorBanner.style.display = 'block';
+                    }
+                    loadEvents();
+                    loadStats();
+                    alert(err.message);
+                })
+                .finally(() => {
+                    if (approveBtn) {
+                        approveBtn.disabled = false;
+                        approveBtn.classList.remove('loading');
+                    }
+                });
         }
 
         function declineEvent(emailId, payload = {}) {
@@ -1883,6 +2139,119 @@
                 .catch(err => alert(err.message));
         }
 
+        function getEditorValues() {
+            const title = document.getElementById('edit-event-title')?.value.trim() || '';
+            const start = document.getElementById('edit-event-start')?.value.trim() || '';
+            const end = document.getElementById('edit-event-end')?.value.trim() || '';
+            const loc = document.getElementById('edit-event-location')?.value.trim() || '';
+            const desc = document.getElementById('edit-event-description')?.value.trim() || '';
+            return {
+                title,
+                start_datetime: start,
+                end_datetime: end,
+                location: loc,
+                description: desc
+            };
+        }
+
+        function populateEventEditor(candidate, canEdit, isSent = false) {
+            const editor = document.getElementById('detail-event-editor');
+            if (!editor) return;
+            if (!candidate) {
+                editor.style.display = 'none';
+                return;
+            }
+            editor.style.display = 'block';
+            const badge = document.getElementById('detail-edit-badge');
+            if (badge) {
+                badge.textContent = isSent ? 'Editable · Previously sent' : 'Editable preview';
+                badge.className = 'status-tag info';
+            }
+            const titleInput = document.getElementById('edit-event-title');
+            const startInput = document.getElementById('edit-event-start');
+            const endInput = document.getElementById('edit-event-end');
+            const locInput = document.getElementById('edit-event-location');
+            const descInput = document.getElementById('edit-event-description');
+
+            if (titleInput) { titleInput.value = candidate.title || candidate.event_title || ''; titleInput.disabled = false; }
+            if (startInput) { startInput.value = candidate.start_datetime || candidate.event_start || ''; startInput.disabled = false; }
+            if (endInput) { endInput.value = candidate.end_datetime || candidate.event_end || ''; endInput.disabled = false; }
+            if (locInput) { locInput.value = candidate.location || candidate.event_location || ''; locInput.disabled = false; }
+            if (descInput) { descInput.value = candidate.description || candidate.event_description || ''; descInput.disabled = false; }
+        }
+
+        let previewDebounceTimer = null;
+        function triggerIcsPreviewUpdate() {
+            clearTimeout(previewDebounceTimer);
+            previewDebounceTimer = setTimeout(() => {
+                if (!currentDetail) return;
+                const candidateSelect = document.getElementById('event-candidate-select');
+                const selectedIndex = candidateSelect && candidateSelect.value !== '' ? Number(candidateSelect.value) : 0;
+                const overrides = getEditorValues();
+                const selectedRecipients = Array.from(document.querySelectorAll('.recipient-checkbox'))
+                    .filter(cb => cb.checked)
+                    .map(cb => cb.value);
+
+                fetch(`/api/events/${encodeURIComponent(currentDetail.email_id)}/preview-ics`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        selected_event_index: selectedIndex,
+                        event_overrides: overrides,
+                        recipients: selectedRecipients
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.ok && data.ics_content) {
+                        renderIcsPreview(null, 'detail-ics', data.ics_content);
+                    }
+                })
+                .catch(() => {});
+            }, 350);
+        }
+
+        function rescanCurrentEmail() {
+            if (!currentDetail || !currentDetail.email_id) return;
+            const btn = document.getElementById('detail-rescan-btn');
+            const doubleCheck = document.getElementById('rescan-double-check')?.checked || false;
+            if (btn) {
+                btn.disabled = true;
+                btn.classList.add('loading');
+                btn.textContent = doubleCheck ? 'Auditing & Rescanning...' : 'Rescanning...';
+            }
+            fetch(`/api/events/${encodeURIComponent(currentDetail.email_id)}/rescan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ double_check: doubleCheck }),
+            })
+            .then(async response => {
+                const payload = await response.json();
+                if (!response.ok) {
+                    throw new Error(payload.error || 'Rescan failed');
+                }
+                return payload;
+            })
+            .then(data => {
+                alert(data.message || 'Email rescanned successfully');
+                loadStats();
+                loadEvents();
+                if (data.record) {
+                    openEventDetails(data.record.email_id);
+                } else {
+                    closeDetails();
+                }
+            })
+            .catch(err => alert(`Rescan error: ${err.message}`))
+            .finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                    btn.textContent = '🔄 Rescan Email';
+                }
+            });
+        }
+
         function getDecisionPayload() {
             const selectedRecipients = Array.from(document.querySelectorAll('.recipient-checkbox'))
                 .filter(cb => cb.checked)
@@ -1897,6 +2266,7 @@
                 reason: document.getElementById('decision-note-input').value.trim(),
                 recipients: selectedRecipients,
                 selected_event_index: Number.isFinite(selectedEventIndex) ? selectedEventIndex : null,
+                event_overrides: getEditorValues(),
             };
         }
 
@@ -1914,8 +2284,33 @@
             if (Number.isFinite(payload.selected_event_index)) {
                 body.selected_event_index = payload.selected_event_index;
             }
+            if (payload.event_overrides && typeof payload.event_overrides === 'object') {
+                body.event_overrides = payload.event_overrides;
+            }
             return JSON.stringify(body);
         }
+
+        const candidateSelectElement = document.getElementById('event-candidate-select');
+        if (candidateSelectElement) {
+            candidateSelectElement.addEventListener('change', () => {
+                if (!currentDetail) return;
+                const candidates = Array.isArray(currentDetail.event_candidates) ? currentDetail.event_candidates : [];
+                const idx = Number(candidateSelectElement.value);
+                const cand = candidates[idx] || null;
+                const sentIndices = Array.isArray(currentDetail.sent_event_indices) ? currentDetail.sent_event_indices : [];
+                const isSent = sentIndices.includes(idx) || Boolean(currentDetail.sent);
+                populateEventEditor(cand, true, isSent);
+                const approveBtn = document.getElementById('detail-approve-btn');
+                if (approveBtn) {
+                    approveBtn.textContent = isSent ? '🔄 Re-send Invite' : 'Approve & Send';
+                }
+                triggerIcsPreviewUpdate();
+            });
+        }
+        ['edit-event-title', 'edit-event-start', 'edit-event-end', 'edit-event-location', 'edit-event-description'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('input', triggerIcsPreviewUpdate);
+        });
 
         function handleDecisionResult(message) {
             closeDetails();
@@ -1951,6 +2346,54 @@
                 loadEvents();
             }
         }
+
+        // Close modals when clicking backdrop (next to the modal content dialog)
+        const detailsModal = document.getElementById('details-modal');
+        if (detailsModal) {
+            detailsModal.addEventListener('click', (e) => {
+                if (!e.target.closest('.modal__content')) {
+                    closeDetails();
+                }
+            });
+        }
+
+        const manualEvalModal = document.getElementById('manual-eval-modal');
+        if (manualEvalModal) {
+            manualEvalModal.addEventListener('click', (e) => {
+                if (!e.target.closest('.modal__content')) {
+                    closeManualEval();
+                }
+            });
+        }
+
+        // Explicit event listeners for modal close buttons
+        document.querySelectorAll('#details-modal .close-btn, #details-modal button.pill-button').forEach(btn => {
+            if (btn.textContent.trim() === 'Close' || btn.classList.contains('close-btn')) {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    closeDetails();
+                });
+            }
+        });
+        document.querySelectorAll('#manual-eval-modal .close-btn, #manual-eval-modal button.pill-button').forEach(btn => {
+            if (btn.textContent.trim() === 'Close' || btn.classList.contains('close-btn')) {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    closeManualEval();
+                });
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (detailsModal && detailsModal.classList.contains('open')) {
+                    closeDetails();
+                }
+                if (manualEvalModal && manualEvalModal.classList.contains('open')) {
+                    closeManualEval();
+                }
+            }
+        });
 
         bootstrap();
         setInterval(() => {

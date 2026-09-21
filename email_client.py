@@ -350,3 +350,201 @@ class EmailClient:
             if parsed not in allowed:
                 allowed.append(parsed)
         return allowed
+
+    def fetch_email_by_message_id(self, message_id: str) -> Optional[Dict]:
+        """
+        Fetch a single email by its Message-ID header from the IMAP inbox.
+
+        Args:
+            message_id: The RFC 2822 Message-ID string to look up.
+
+        Returns:
+            Dict containing parsed email metadata and body, or None if not found.
+        """
+        if not message_id:
+            return None
+        try:
+            mail = self.connect_imap()
+            mail.select('INBOX')
+            clean_id = message_id.strip()
+            candidates_to_try = [f'"{clean_id}"']
+            if clean_id.startswith('<') and clean_id.endswith('>'):
+                candidates_to_try.append(f'"{clean_id[1:-1]}"')
+            else:
+                candidates_to_try.append(f'"<{clean_id}>"')
+
+            matching_nums = []
+            for query_val in candidates_to_try:
+                status, nums = mail.search(None, f'HEADER Message-ID {query_val}')
+                if status == 'OK' and nums and nums[0].split():
+                    matching_nums = nums[0].split()
+                    break
+
+            if not matching_nums:
+                logger.warning("No email found in IMAP inbox with Message-ID: %s", message_id)
+                return None
+
+            email_id_str = matching_nums[-1].decode()
+            _, msg_data = mail.fetch(email_id_str, '(BODY.PEEK[])')
+
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    subject = msg['subject']
+                    sender = msg['from']
+                    date = msg['date']
+                    msg_id = msg['message-id']
+
+                    body = self._strip_reply_trail(self._get_email_body(msg))
+                    attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
+                    if attachment_text:
+                        body = f"{body}\n\n{attachment_text}" if body else attachment_text
+
+                    recipients = self._extract_recipients(msg)
+                    timestamp = normalize_timestamp(date)
+                    body_hash = fingerprint_body(body)
+                    hashed_id = generate_email_id(
+                        message_id=msg_id or email_id_str,
+                        timestamp=timestamp or date,
+                        sender=sender,
+                        subject=subject,
+                        body_hash=body_hash,
+                    )
+
+                    return {
+                        'id': hashed_id,
+                        'source_id': email_id_str,
+                        'message_id': msg_id or message_id,
+                        'subject': subject,
+                        'sender': sender,
+                        'date': timestamp or date,
+                        'body': body,
+                        'original_msg': msg,
+                        'recipients': recipients,
+                    }
+            return None
+        except Exception as e:
+            logger.error("Error fetching email by Message-ID %s: %s", message_id, e)
+            return None
+
+    def fetch_email_by_id(
+        self,
+        email_id: str,
+        message_id: Optional[str] = None,
+        subject: Optional[str] = None,
+        sender: Optional[str] = None,
+        max_search: int = 100,
+    ) -> Optional[Dict]:
+        """
+        Fetch an email from IMAP by its deterministic hash ID or message ID.
+
+        First attempts direct lookup by Message-ID (if available). If that fails
+        or produces no match, scans recent inbox messages from the IMAP server,
+        computing each email's deterministic hash ID via `generate_email_id()` to find
+        the identical message that produced `email_id`.
+
+        Args:
+            email_id: The deterministic hash identifier (msg_...) of the email.
+            message_id: Optional RFC 2822 Message-ID header.
+            subject: Optional subject for secondary fallback matching.
+            sender: Optional sender for secondary fallback matching.
+            max_search: Maximum number of recent inbox messages to inspect.
+
+        Returns:
+            Dict containing parsed email metadata and body, or None if not found.
+        """
+        # 1. Try fast lookup by message_id if available
+        if message_id:
+            try:
+                data = self.fetch_email_by_message_id(message_id)
+                if data and (data.get('id') == email_id or not email_id):
+                    return data
+            except Exception as exc:
+                logger.warning("Direct message_id fetch failed during fetch_email_by_id: %s", exc)
+
+        # 2. Scan recent emails in inbox to match by deterministic hash
+        try:
+            mail = self.connect_imap()
+            mail.select('INBOX')
+            _, message_numbers = mail.search(None, 'ALL')
+
+            if not message_numbers or not message_numbers[0]:
+                try:
+                    mail.close()
+                    mail.logout()
+                except Exception:
+                    pass
+                return None
+
+            email_ids = [msg_id.decode() for msg_id in message_numbers[0].split()]
+            email_ids.reverse()  # newest first
+            batch_ids = email_ids[:max_search]
+            fallback_match = None
+
+            for email_id_str in batch_ids:
+                _, msg_data = mail.fetch(email_id_str, '(BODY.PEEK[])')
+
+                for response_part in msg_data:
+                    if isinstance(response_part, tuple):
+                        msg = email.message_from_bytes(response_part[1])
+                        msg_subj = msg['subject']
+                        msg_from = msg['from']
+                        msg_date = msg['date']
+                        msg_id = msg['message-id']
+
+                        body = self._strip_reply_trail(self._get_email_body(msg))
+                        attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
+                        if attachment_text:
+                            body = f"{body}\n\n{attachment_text}" if body else attachment_text
+
+                        recipients = self._extract_recipients(msg)
+                        timestamp = normalize_timestamp(msg_date)
+                        body_hash = fingerprint_body(body)
+                        hashed_id = generate_email_id(
+                            message_id=msg_id or email_id_str,
+                            timestamp=timestamp or msg_date,
+                            sender=msg_from,
+                            subject=msg_subj,
+                            body_hash=body_hash,
+                        )
+
+                        email_dict = {
+                            'id': hashed_id,
+                            'source_id': email_id_str,
+                            'message_id': msg_id or email_id_str,
+                            'subject': msg_subj,
+                            'sender': msg_from,
+                            'date': timestamp or msg_date,
+                            'body': body,
+                            'original_msg': msg,
+                            'recipients': recipients,
+                        }
+
+                        if hashed_id == email_id:
+                            try:
+                                mail.close()
+                                mail.logout()
+                            except Exception:
+                                pass
+                            return email_dict
+
+                        if message_id and msg_id:
+                            c1 = (message_id or '').strip().strip('<>')
+                            c2 = (msg_id or '').strip().strip('<>')
+                            if c1 and c1 == c2 and not fallback_match:
+                                fallback_match = email_dict
+
+                        if subject and sender and not fallback_match:
+                            if (msg_subj or '').strip() == (subject or '').strip() and (msg_from or '').strip().lower() == (sender or '').strip().lower():
+                                fallback_match = email_dict
+
+            try:
+                mail.close()
+                mail.logout()
+            except Exception:
+                pass
+            return fallback_match
+        except Exception as exc:
+            logger.error("Error scanning IMAP inbox for email %s: %s", email_id, exc)
+            return None
+

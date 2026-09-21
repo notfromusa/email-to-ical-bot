@@ -113,7 +113,7 @@ class CalendarGenerator:
                 "END:VCALENDAR"
             ])
             
-            ics_string = "\r\n".join(ics_content)
+            ics_string = "\r\n".join(self._fold_line(line) for line in ics_content)
             
             logger.info(f"Created iCalendar invite for: {event_data['title']}")
             
@@ -150,7 +150,7 @@ class CalendarGenerator:
     
     def _escape_text(self, text: str) -> str:
         """
-        Escape special characters in iCalendar text fields
+        Escape special characters in iCalendar text fields according to RFC 5545 Section 3.3.11.
         """
         if not text:
             return ""
@@ -159,9 +159,59 @@ class CalendarGenerator:
         text = text.replace('\\', '\\\\')
         text = text.replace(';', '\\;')
         text = text.replace(',', '\\,')
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
         text = text.replace('\n', '\\n')
         
         return text
+
+    @staticmethod
+    def _fold_line(line: str, limit: int = 75) -> str:
+        """
+        Fold a content line according to RFC 5545 Section 3.1.
+
+        Lines of text SHOULD NOT be longer than 75 octets, excluding the line break.
+        Long content lines are split into lines where continuation lines begin with
+        a single space character. Preserves multi-byte UTF-8 character boundaries.
+
+        Args:
+            line: The content line string to fold.
+            limit: Maximum octet length per line (default: 75).
+
+        Returns:
+            Folded content line string.
+        """
+        encoded = line.encode('utf-8')
+        if len(encoded) <= limit:
+            return line
+
+        parts = []
+        remaining = encoded
+        first_line = True
+
+        while remaining:
+            max_bytes = limit if first_line else limit - 1
+            if len(remaining) <= max_bytes:
+                parts.append(remaining.decode('utf-8'))
+                break
+
+            # Find valid UTF-8 boundary within max_bytes
+            cut = max_bytes
+            while cut > 0:
+                try:
+                    chunk = remaining[:cut].decode('utf-8')
+                    break
+                except UnicodeDecodeError:
+                    cut -= 1
+
+            if cut == 0:
+                chunk = remaining[:1].decode('utf-8', errors='ignore')
+                cut = 1
+
+            parts.append(chunk)
+            remaining = remaining[cut:]
+            first_line = False
+
+        return "\r\n ".join(parts)
     
     def validate_event_data(self, event_data: Dict) -> bool:
         """

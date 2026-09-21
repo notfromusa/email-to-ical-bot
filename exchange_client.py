@@ -350,13 +350,24 @@ class ExchangeClient:
             raise
 
     def _find_message_by_id(self, message_id: Optional[str]):
+        """Locate an Exchange message item by its Message-ID header."""
         if not message_id:
             return None
-        try:
-            return self.account.inbox.filter(message_id=message_id).first()
-        except Exception as exc:
-            logger.warning("Unable to locate original message for %s: %s", message_id, exc)
-            return None
+        clean_id = message_id.strip()
+        candidates = [clean_id]
+        if clean_id.startswith('<') and clean_id.endswith('>'):
+            candidates.append(clean_id[1:-1].strip())
+        else:
+            candidates.append(f"<{clean_id}>")
+
+        for cand in candidates:
+            try:
+                item = self.account.inbox.filter(message_id=cand).first()
+                if item:
+                    return item
+            except Exception as exc:
+                logger.debug("Exchange filter query for message_id %s failed: %s", cand, exc)
+        return None
 
     def get_message_by_id(self, message_id: Optional[str]):
         """Public helper for retrieving an Exchange message by its message-id."""
@@ -407,3 +418,154 @@ class ExchangeClient:
             if parsed not in allowed:
                 allowed.append(parsed)
         return allowed
+
+    def fetch_email_by_message_id(self, message_id: str) -> Optional[Dict]:
+        """
+        Fetch a single email by its Message-ID from Exchange inbox.
+
+        Args:
+            message_id: The Message-ID header to look up.
+
+        Returns:
+            Dict containing parsed email metadata and body, or None if not found.
+        """
+        if not message_id:
+            return None
+        try:
+            item = self.get_message_by_id(message_id)
+            if not item:
+                return None
+            body = ""
+            if item.text_body:
+                body = item.text_body
+            elif item.body:
+                from html import unescape
+                import re
+                body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
+            body = self._strip_reply_trail(body)
+            attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
+            if attachment_text:
+                body = f"{body}\n\n{attachment_text}" if body else attachment_text
+
+            recipients = self._extract_recipients(item)
+            timestamp = normalize_timestamp(item.datetime_received)
+            body_hash = fingerprint_body(body)
+            hashed_id = generate_email_id(
+                message_id=item.message_id,
+                timestamp=timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                sender=item.sender.email_address if item.sender else "",
+                subject=item.subject or "(No subject)",
+                body_hash=body_hash,
+            )
+            return {
+                'id': hashed_id,
+                'source_id': item.message_id,
+                'message_id': item.message_id,
+                'subject': item.subject or "(No subject)",
+                'sender': item.sender.email_address if item.sender else "Unknown",
+                'date': timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                'body': body,
+                'original_msg': item,
+                'recipients': recipients,
+            }
+        except Exception as e:
+            logger.error("Error fetching Exchange email by Message-ID %s: %s", message_id, e)
+            return None
+
+    def fetch_email_by_id(
+        self,
+        email_id: str,
+        message_id: Optional[str] = None,
+        subject: Optional[str] = None,
+        sender: Optional[str] = None,
+        max_search: int = 100,
+    ) -> Optional[Dict]:
+        """
+        Fetch an email from Exchange by its deterministic hash ID or message ID.
+
+        First attempts direct lookup by Message-ID (if available). If that fails
+        or produces no match, scans recent inbox messages from the Exchange server,
+        computing each email's deterministic hash ID via `generate_email_id()` to find
+        the identical message that produced `email_id`.
+
+        Args:
+            email_id: The deterministic hash identifier (msg_...) of the email.
+            message_id: Optional RFC 2822 Message-ID header.
+            subject: Optional subject for secondary fallback matching.
+            sender: Optional sender for secondary fallback matching.
+            max_search: Maximum number of recent inbox messages to inspect.
+
+        Returns:
+            Dict containing parsed email metadata and body, or None if not found.
+        """
+        # 1. Try fast lookup by message_id if available
+        if message_id:
+            try:
+                data = self.fetch_email_by_message_id(message_id)
+                if data and (data.get('id') == email_id or not email_id):
+                    return data
+            except Exception as exc:
+                logger.warning("Direct message_id fetch failed during fetch_email_by_id: %s", exc)
+
+        # 2. Scan recent emails in inbox to match by deterministic hash
+        try:
+            queryset = self.account.inbox.all().order_by('-datetime_received')
+            items = list(queryset[:max_search])
+            fallback_match = None
+
+            for item in items:
+                body = ""
+                if item.text_body:
+                    body = item.text_body
+                elif item.body:
+                    from html import unescape
+                    import re
+                    body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
+                body = self._strip_reply_trail(body)
+                attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
+                if attachment_text:
+                    body = f"{body}\n\n{attachment_text}" if body else attachment_text
+
+                recipients = self._extract_recipients(item)
+                timestamp = normalize_timestamp(item.datetime_received)
+                body_hash = fingerprint_body(body)
+                hashed_id = generate_email_id(
+                    message_id=item.message_id,
+                    timestamp=timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                    sender=item.sender.email_address if item.sender else "",
+                    subject=item.subject or "(No subject)",
+                    body_hash=body_hash,
+                )
+
+                email_dict = {
+                    'id': hashed_id,
+                    'source_id': item.message_id,
+                    'message_id': item.message_id,
+                    'subject': item.subject or "(No subject)",
+                    'sender': item.sender.email_address if item.sender else "Unknown",
+                    'date': timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                    'body': body,
+                    'original_msg': item,
+                    'recipients': recipients,
+                }
+
+                if hashed_id == email_id:
+                    return email_dict
+
+                # Secondary match if message_id matches
+                if message_id and item.message_id:
+                    c1 = (message_id or '').strip().strip('<>')
+                    c2 = (item.message_id or '').strip().strip('<>')
+                    if c1 and c1 == c2 and not fallback_match:
+                        fallback_match = email_dict
+
+                # Tertiary match if subject and sender match
+                if subject and sender and not fallback_match:
+                    item_sender = item.sender.email_address if item.sender else ""
+                    if (item.subject or '').strip() == subject.strip() and item_sender.lower() == sender.lower():
+                        fallback_match = email_dict
+
+            return fallback_match
+        except Exception as exc:
+            logger.error("Error scanning Exchange inbox for email %s: %s", email_id, exc)
+            return None
