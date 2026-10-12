@@ -11,6 +11,7 @@ from exchangelib import (
     Mailbox,
     Version,
     Build,
+    EWSTimeZone,
 )
 from pathlib import Path
 from datetime import datetime
@@ -29,8 +30,32 @@ from attachment_parser import AttachmentExtractor
 from identifiers import generate_email_id, fingerprint_body, normalize_timestamp
 from messaging import build_reply_message_html_from_text
 
+
+class SuppressNaiveDatetimeFilter(logging.Filter):
+    """Filter out exchangelib's repetitive naive datetime INFO log messages.
+
+    Exchange Web Services (EWS) frequently returns item timestamps (such as last_modified_time)
+    without an explicit timezone offset, prompting exchangelib to assume the account's default
+    timezone and log an INFO notice for each occurrence.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Filter records containing naive datetime timezone assumption notices.
+
+        Args:
+            record: The logging record to evaluate.
+
+        Returns:
+            bool: False if the log record announces a naive datetime assumption, True otherwise.
+        """
+        return "Found naive datetime" not in record.getMessage()
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Suppress repetitive naive datetime noise while allowing other exchangelib INFO logs through
+logging.getLogger("exchangelib.fields").addFilter(SuppressNaiveDatetimeFilter())
 
 # Disable SSL verification warnings if needed (not recommended for production)
 # BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
@@ -55,6 +80,7 @@ class ExchangeClient:
 
         credentials = Credentials(username=username, password=self.email_password)
         autodiscover_error = None
+        default_tz = self._get_default_timezone()
 
         if config.EXCHANGE_AUTODISCOVER:
             try:
@@ -64,6 +90,7 @@ class ExchangeClient:
                     credentials=credentials,
                     autodiscover=True,
                     access_type=DELEGATE,
+                    default_timezone=default_tz,
                 )
             except Exception as exc:
                 autodiscover_error = exc
@@ -81,6 +108,24 @@ class ExchangeClient:
 
         if autodiscover_error:
             logger.info("Manual configuration succeeded after autodiscover failure")
+
+    def _get_default_timezone(self) -> EWSTimeZone:
+        """Resolve the configured default timezone for the Exchange account.
+
+        Returns:
+            EWSTimeZone: An EWSTimeZone instance matching config.DEFAULT_TIMEZONE,
+                falling back to the local host timezone if invalid.
+        """
+        tz_name = getattr(config, 'DEFAULT_TIMEZONE', 'Europe/Berlin')
+        try:
+            return EWSTimeZone(tz_name)
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse timezone '%s' (%s). Falling back to local timezone.",
+                tz_name,
+                exc,
+            )
+            return EWSTimeZone.localzone()
 
     def _connect_manual(self, credentials):
         """Fallback manual configuration when autodiscover is unavailable"""
@@ -108,12 +153,14 @@ class ExchangeClient:
             config_kwargs['version'] = version_obj
 
         server_config = Configuration(**config_kwargs)
+        default_tz = self._get_default_timezone()
 
         return Account(
             primary_smtp_address=self.email_address,
             config=server_config,
             autodiscover=False,
             access_type=DELEGATE,
+            default_timezone=default_tz,
         )
     
     def fetch_unprocessed_emails(

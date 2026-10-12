@@ -22,8 +22,12 @@ from email_client import EmailClient
 from exchange_client import ExchangeClient
 from messaging import build_reply_message
 from calendar_generator import CalendarGenerator
+import logging
 from llm_client import LLMClient
 from main import iCalBot
+
+# Suppress verbose HTTP request access logs from Werkzeug
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 app = Flask(__name__)
 _auth_warning_logged = False
@@ -939,11 +943,23 @@ def api_manual_evaluate():
     llm_client = LLMClient()
     generator = CalendarGenerator()
 
-    event_data, metadata = llm_client.analyze_email_for_event(
-        body,
-        subject,
-        reference_timestamp=reference_timestamp,
-    )
+    try:
+        event_data, metadata = llm_client.analyze_email_for_event(
+            body,
+            subject,
+            reference_timestamp=reference_timestamp,
+        )
+    except Exception as exc:
+        app.logger.error("LLM evaluation failed during manual eval: %s", exc)
+        prompt_val = getattr(exc, 'metadata', {}).get('prompt') if hasattr(exc, 'metadata') else None
+        return jsonify({
+            'ok': False,
+            'error': f'LLM evaluation failed: {exc}',
+            'has_event': False,
+            'events': [],
+            'llm_prompt': prompt_val,
+            'llm_response': None,
+        }), 502
 
     candidates = _event_candidates_from_event_data(event_data or {})
     response_payload = {

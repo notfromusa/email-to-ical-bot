@@ -111,6 +111,7 @@ class StorageManager:
             "approval_timestamp": "TEXT",
             "approved_by": "TEXT",
             "sent_event_indices": "TEXT",
+            "llm_error_count": "INTEGER NOT NULL DEFAULT 0",
         }
         existing = {
             row["name"] for row in conn.execute("PRAGMA table_info('processed_results')")
@@ -147,6 +148,7 @@ class StorageManager:
         email_recipients: Optional[Any] = None,
         approval_required: bool = False,
         approval_status: Optional[str] = None,
+        llm_error_count: Optional[int] = None,
     ) -> None:
         """Insert or update a processed email result."""
         processed_at = datetime.utcnow().isoformat()
@@ -182,6 +184,7 @@ class StorageManager:
             "status": status,
             "error": error,
             "sent_event_indices": "[]",
+            "llm_error_count": int(llm_error_count) if llm_error_count is not None else 0,
         }
 
         if event_data:
@@ -204,14 +207,14 @@ class StorageManager:
                     event_start, event_end, event_location, event_candidates, selected_event_index,
                     llm_prompt, llm_response,
                     llm_raw_result, prompt_injection, ics_preview, ics_content, sent, dry_run,
-                    approval_required, approval_status, status, error, sent_event_indices
+                    approval_required, approval_status, status, error, sent_event_indices, llm_error_count
                 ) VALUES (
                     :email_id, :email_message_id, :email_subject, :email_sender, :email_date,
                     :email_recipients, :email_body, :processed_at, :has_event, :event_title, :event_description,
                     :event_start, :event_end, :event_location, :event_candidates, :selected_event_index,
                     :llm_prompt, :llm_response,
                     :llm_raw_result, :prompt_injection, :ics_preview, :ics_content, :sent, :dry_run,
-                    :approval_required, :approval_status, :status, :error, :sent_event_indices
+                    :approval_required, :approval_status, :status, :error, :sent_event_indices, :llm_error_count
                 )
                 ON CONFLICT(email_id) DO UPDATE SET
                     email_message_id=excluded.email_message_id,
@@ -240,7 +243,8 @@ class StorageManager:
                     approval_required=excluded.approval_required,
                     approval_status=excluded.approval_status,
                     status=excluded.status,
-                    error=excluded.error
+                    error=excluded.error,
+                    llm_error_count=excluded.llm_error_count
                 """,
                 payload,
             )
@@ -250,8 +254,9 @@ class StorageManager:
         """Fetch processed results with optional filtering."""
         filter_map = {
             "events": "has_event = 1",
-            "no_events": "has_event = 0",
+            "no_events": "has_event = 0 AND (status IS NULL OR status != 'llm_error')",
             "pending": "approval_required = 1 AND (approval_status IS NULL OR approval_status = 'pending')",
+            "errors": "status = 'llm_error' OR status = 'send_error' OR (error IS NOT NULL AND error != '')",
         }
         clause = filter_map.get(filter_type)
         query = "SELECT * FROM processed_results"
@@ -276,6 +281,48 @@ class StorageManager:
         with self._connect() as conn:
             rows = conn.execute("SELECT email_id FROM processed_archive").fetchall()
         return {row[0] for row in rows}
+
+    def get_llm_error_count(self, email_id: str) -> int:
+        """Return the number of failed LLM attempts recorded for an email ID.
+
+        Args:
+            email_id: The unique identifier of the email.
+
+        Returns:
+            int: The recorded error count, or 0 if no record exists.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT llm_error_count FROM processed_results WHERE email_id = ?",
+                (email_id,),
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def recover_null_llm_results(self) -> List[str]:
+        """Find records where LLM prompt exists but response is null, mark them as llm_error,
+        and return their email IDs so they can be re-evaluated.
+
+        Returns:
+            List[str]: List of recovered email IDs.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT email_id FROM processed_results WHERE llm_prompt IS NOT NULL AND llm_response IS NULL"
+            ).fetchall()
+            email_ids = [row[0] for row in rows]
+            if email_ids:
+                conn.execute(
+                    """
+                    UPDATE processed_results
+                    SET status = 'llm_error',
+                        error = COALESCE(error, 'LLM inference failed or timed out (response logged as null)'),
+                        has_event = 0,
+                        llm_error_count = 0
+                    WHERE llm_prompt IS NOT NULL AND llm_response IS NULL
+                    """
+                )
+                conn.commit()
+        return email_ids
 
     def mark_event_sent(
         self,

@@ -19,6 +19,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress verbose HTTP request access logs from Werkzeug
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
 
 def run_bot(once=False):
     """Run the bot in a separate thread"""

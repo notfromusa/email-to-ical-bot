@@ -12,3 +12,11 @@ dependencies = [
     "exchangelib>=5.0.0",
     "pypdf>=4.2.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

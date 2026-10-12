@@ -6,6 +6,7 @@ import requests
 import json
 import logging
 import re
+import time
 from email.utils import parsedate_to_datetime
 from typing import Optional, Dict, Tuple, Any, List
 from datetime import datetime, timedelta
@@ -23,10 +24,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class LLMError(Exception):
+    """Exception raised when an LLM inference call fails due to timeouts, network, or server errors."""
+
+    def __init__(
+        self,
+        message: str,
+        original_exception: Optional[Exception] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Initialize LLMError with optional underlying exception and context metadata.
+
+        Args:
+            message: Descriptive error message.
+            original_exception: The underlying exception (e.g., requests.exceptions.Timeout).
+            metadata: Diagnostic context dictionary (prompt, response, etc.).
+        """
+        super().__init__(message)
+        self.original_exception = original_exception
+        self.metadata = metadata or {}
+
+
 class LLMClient:
     def __init__(self):
         self.endpoint = config.LLM_ENDPOINT
         self.model = config.LLM_MODEL
+        self.timeout = int(getattr(config, 'LLM_TIMEOUT_SECONDS', 300))
+        self.keep_alive = getattr(config, 'LLM_KEEP_ALIVE', '65m')
+        self.think = getattr(config, 'LLM_THINK', '')
         configured_tz = (getattr(config, 'DEFAULT_TIMEZONE', '') or '').strip()
         if not configured_tz or configured_tz.upper() == 'UTC':
             configured_tz = 'Europe/Berlin'
@@ -144,8 +169,14 @@ class LLMClient:
                 )
                 metadata.update(verify_meta)
                 event_data = verified_data
+
+            if event_data is None:
+                err_msg = f"LLM response for '{email_subject}' could not be parsed into valid event JSON"
+                metadata["error"] = err_msg
+                logger.warning(err_msg)
+                raise LLMError(err_msg, metadata=metadata)
             
-            if event_data and event_data.get('has_event'):
+            if event_data.get('has_event'):
                 events_count = len(event_data.get('events') or [])
                 logger.info("Detected %s event candidate(s)", events_count)
                 return event_data, metadata
@@ -153,10 +184,17 @@ class LLMClient:
                 logger.info("No event detected in email")
                 return None, metadata
                 
+        except LLMError as e:
+            e.metadata.update(metadata)
+            metadata["error"] = str(e)
+            logger.warning("LLM analysis failed for '%s': %s", email_subject, e)
+            self._log_debug_artifact(email_subject, prompt, response_text, f"llm_error: {e}", raw_result)
+            raise
         except Exception as e:
-            logger.error(f"Error analyzing email with LLM: {e}")
+            metadata["error"] = str(e)
+            logger.error("Unexpected error analyzing email with LLM: %s", e)
             self._log_debug_artifact(email_subject, prompt, response_text, f"exception: {e}", raw_result)
-            return None, metadata
+            raise LLMError(f"Unexpected error analyzing email: {e}", original_exception=e, metadata=metadata) from e
 
     def _create_verification_prompt(
         self,
@@ -365,18 +403,56 @@ Respond with ONLY the JSON object, nothing else:"""
             payload["options"] = self.llm_options
         if force_json_format:
             payload["format"] = "json"
+        if getattr(self, "keep_alive", None):
+            payload["keep_alive"] = self.keep_alive
+        if getattr(self, "think", None):
+            think_val = str(self.think).strip().lower()
+            if think_val == "true":
+                payload["think"] = True
+            elif think_val == "false":
+                payload["think"] = False
+            elif self.think:
+                payload["think"] = self.think
         
         self._validate_endpoint_security()
-        logger.info("Calling LLM endpoint")
-        
-        response = requests.post(
+        logger.info(
+            "Calling LLM endpoint: %s (model: %s, timeout: %ss)",
             self.endpoint,
-            json=payload,
-            timeout=60
+            self.model,
+            self.timeout,
         )
-        
-        response.raise_for_status()
-        result = response.json()
+        start_time = time.time()
+        try:
+            response = requests.post(
+                self.endpoint,
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+        except requests.exceptions.Timeout as exc:
+            elapsed = time.time() - start_time
+            err_msg = (
+                f"LLM request timed out after {elapsed:.1f}s "
+                f"(configured timeout: {self.timeout}s, model: {self.model})"
+            )
+            logger.error(err_msg)
+            raise LLMError(err_msg, original_exception=exc) from exc
+        except requests.exceptions.RequestException as exc:
+            elapsed = time.time() - start_time
+            err_detail = ""
+            if hasattr(exc, "response") and exc.response is not None:
+                try:
+                    err_detail = f" [Status: {exc.response.status_code}, Body: {exc.response.text[:250]}]"
+                except Exception:
+                    pass
+            err_msg = f"LLM request failed after {elapsed:.1f}s: {exc}{err_detail}"
+            logger.error(err_msg)
+            raise LLMError(err_msg, original_exception=exc) from exc
+        except json.JSONDecodeError as exc:
+            err_msg = f"LLM endpoint returned invalid JSON response: {exc}"
+            logger.error(err_msg)
+            raise LLMError(err_msg, original_exception=exc) from exc
 
         text = result.get('response') or ''
         if not text:

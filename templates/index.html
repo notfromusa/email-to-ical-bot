@@ -314,6 +314,12 @@
             color: var(--accent-strong);
         }
 
+        .status-tag.warn, .status-tag.error {
+            background: rgba(239, 68, 68, 0.18);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+        }
+
         .card-actions {
             margin-top: 1rem;
             display: flex;
@@ -740,6 +746,7 @@
                         <button class="filter-chip" data-filter="events">Events only</button>
                         <button class="filter-chip" data-filter="no_events">No events</button>
                         <button class="filter-chip" data-filter="pending">Pending</button>
+                        <button class="filter-chip" data-filter="errors">Errors / Warnings</button>
                     </div>
                 </div>
                 <div class="feed-actions">
@@ -1514,12 +1521,15 @@
 
         function renderEventCard(event) {
             const hasEvent = Boolean(event.has_event);
+            const isLlmError = event.status === 'llm_error';
             const pendingApproval = isPending(event);
             const promptInjection = Boolean(event.prompt_injection);
             const candidateCount = Array.isArray(event.event_candidates) ? event.event_candidates.length : 0;
-            const statusClass = pendingApproval ? 'info' : (hasEvent ? 'success' : 'info');
+            const statusClass = isLlmError ? 'warn' : (pendingApproval ? 'info' : (hasEvent ? 'success' : 'info'));
             let statusLabel = event.status || (hasEvent ? 'Event detected' : 'No event detected');
-            if (event.status === 'send_error') {
+            if (isLlmError) {
+                statusLabel = '⚠️ LLM failed · Retry available';
+            } else if (event.status === 'send_error') {
                 statusLabel = 'Send failed · Retry available';
             } else if (pendingApproval) {
                 statusLabel = 'Awaiting approval';
@@ -1548,14 +1558,21 @@
             if (hasEvent && event.event_location) {
                 extraMeta.push(`<span><strong>Location</strong><br>${event.event_location}</span>`);
             }
-            if (!hasEvent && event.error) {
+            if (event.error) {
                 extraMeta.push(`<span><strong>Error</strong><br>${event.error}</span>`);
             }
 
+            const cardTitle = isLlmError
+                ? '⚠️ LLM Extraction Failed'
+                : (hasEvent ? (event.event_title || 'Untitled event') : 'No event extracted');
+            const cardDesc = isLlmError
+                ? (event.error ? `Error: ${event.error}` : 'The LLM call encountered an error or timeout during processing.')
+                : (hasEvent ? (event.event_description || 'No description provided.') : 'The LLM did not detect a calendar-worthy event.');
+
             return `
-                <article class="event-card ${hasEvent ? 'event-card--invite' : 'event-card--info'}" onclick="openEventDetails('${event.email_id || ''}')">
-                    <h3>${hasEvent ? (event.event_title || 'Untitled event') : 'No event extracted'}</h3>
-                    <p>${hasEvent ? (event.event_description || 'No description provided.') : 'The LLM did not detect a calendar-worthy event.'}</p>
+                <article class="event-card ${isLlmError ? 'event-card--warn' : (hasEvent ? 'event-card--invite' : 'event-card--info')}" onclick="openEventDetails('${event.email_id || ''}')">
+                    <h3>${cardTitle}</h3>
+                    <p>${cardDesc}</p>
                     <span class="status-tag ${statusClass}">${statusLabel}</span>
                     ${promptInjection ? '<span class="status-tag info">Prompt injection flagged</span>' : ''}
                     <div class="event-meta">${extraMeta.join('')}</div>
@@ -1958,7 +1975,10 @@
                     const errorBanner = document.getElementById('detail-error-banner');
                     const errorText = document.getElementById('detail-error-text');
                     if (errorBanner && errorText) {
-                        if (record.status === 'send_error' || record.error) {
+                        if (record.status === 'llm_error') {
+                            errorText.textContent = `LLM extraction failed: ${record.error || 'The model timed out or encountered an error'}. You can trigger a rescan below.`;
+                            errorBanner.style.display = 'block';
+                        } else if (record.status === 'send_error' || record.error) {
                             errorText.textContent = `Send failed: ${record.error || 'Unknown error'}. You can retry approving and sending.`;
                             errorBanner.style.display = 'block';
                         } else {

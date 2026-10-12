@@ -41,6 +41,10 @@ LLM_DEBUG_DIR = os.getenv("LLM_DEBUG_DIR", "")  # empty disables on-disk debug a
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.15"))
 LLM_MAX_EVENTS_PER_EMAIL = int(os.getenv("LLM_MAX_EVENTS_PER_EMAIL", "5"))
+LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "300"))
+LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "65m")
+LLM_THINK = os.getenv("LLM_THINK", "")  # Optional explicit thinking override ("true", "false", or level); unset preserves model default
+LLM_MAX_RETRY_ATTEMPTS = int(os.getenv("LLM_MAX_RETRY_ATTEMPTS", "1"))
 RESULTS_DB_PATH = os.getenv("RESULTS_DB_PATH", "data/processed_results.db")
 
 # Attachment extraction configuration
