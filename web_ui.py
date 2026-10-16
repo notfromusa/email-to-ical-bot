@@ -437,12 +437,15 @@ def _send_calendar_invite_from_record(record, recipients_override=None, selected
             raise
     if not ics_content:
         raise ValueError('Missing ICS content for this event')
+    original_email['event_title'] = event_payload.get('title')
 
     return mail_client.send_reply_with_calendar(
         original_email,
         ics_content,
         reply_message,
         dry_run=config.DRY_RUN,
+        event_data=event_payload,
+        event_title=event_payload.get('title'),
     ), event_payload, resolved_index, ics_content
 
 
@@ -1048,6 +1051,7 @@ def api_manual_evaluate_send_self():
         'sender': self_address,
         'message_id': None,
         'recipients': [self_address],
+        'event_title': normalized_event.get('title'),
     }
 
     try:
@@ -1056,6 +1060,8 @@ def api_manual_evaluate_send_self():
             ics_content,
             reply_message,
             dry_run=config.DRY_RUN,
+            event_data=normalized_event,
+            event_title=normalized_event.get('title'),
         )
         return jsonify({'ok': True, 'send_result': send_result})
     except Exception as exc:

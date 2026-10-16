@@ -28,7 +28,7 @@ import logging
 import config
 from attachment_parser import AttachmentExtractor
 from identifiers import generate_email_id, fingerprint_body, normalize_timestamp
-from messaging import build_reply_message_html_from_text
+from messaging import build_reply_message_html_from_text, format_invite_subject
 
 
 class SuppressNaiveDatetimeFilter(logging.Filter):
@@ -288,17 +288,57 @@ class ExchangeClient:
                     return '\n'.join(lines[:idx]).strip()
         return body.strip()
     
-    def send_reply_with_calendar(self, original_email: Dict, ics_content: str, 
-                                 reply_message: str = "I've created a calendar invite for this event.",
-                                 dry_run: bool = False):
-        """
-        Send a reply to an email with calendar invite attached
-        
+    @staticmethod
+    def _extract_summary_from_ics(ics_content: str) -> Optional[str]:
+        """Extract SUMMARY property from iCalendar (.ics) content if available.
+
         Args:
-            original_email: Dictionary containing original email data
-            ics_content: iCalendar file content as string
-            reply_message: Message body for the reply
-            dry_run: If True, only preview without sending
+            ics_content: Raw iCalendar file content.
+
+        Returns:
+            Extracted and unescaped SUMMARY string, or None if not found.
+        """
+        if not ics_content:
+            return None
+        for line in ics_content.splitlines():
+            if line.startswith("SUMMARY:"):
+                raw_summary = line[len("SUMMARY:"):].strip()
+                summary = (
+                    raw_summary.replace(r"\n", "\n")
+                    .replace(r"\N", "\n")
+                    .replace(r"\,", ",")
+                    .replace(r"\;", ";")
+                    .replace(r"\\", "\\")
+                )
+                return summary.strip() or None
+        return None
+
+    def send_reply_with_calendar(
+        self,
+        original_email: Dict,
+        ics_content: str, 
+        reply_message: str = "I've created a calendar invite for this event.",
+        dry_run: bool = False,
+        event_data: Optional[Dict] = None,
+        event_title: Optional[str] = None,
+    ):
+        """Send a reply to an email with calendar invite attached via Exchange (EWS).
+
+        In accordance with RFC 6047 Section 2.3, the MIME Subject header field is
+        derived from the specific event title rather than the parent email subject,
+        ensuring Exchange/Outlook calendar views show the accurate event headline rather
+        than the generic message subject.
+
+        Args:
+            original_email: Dictionary containing original email data.
+            ics_content: iCalendar file content as string.
+            reply_message: Message body for the reply.
+            dry_run: If True, only preview without sending.
+            event_data: Optional dictionary containing event details (title, etc.).
+            event_title: Optional explicit title/short description of the event.
+
+        Returns:
+            Dictionary containing send result status, recipients, protocol, and subject.
         """
         try:
             # Get the original message for threading and richer metadata
@@ -320,6 +360,17 @@ class ExchangeClient:
                 logger.warning(message)
                 raise RuntimeError(message)
 
+            # Determine appropriate event title for the subject line
+            resolved_title = (
+                (event_title or '').strip()
+                or ((event_data.get('title') if event_data else '') or '').strip()
+                or (original_email.get('event_title') or '').strip()
+            )
+            if not resolved_title and ics_content:
+                resolved_title = self._extract_summary_from_ics(ics_content)
+
+            subject_line = format_invite_subject(resolved_title, original_email.get('subject'))
+
             mailbox_recipients = [Mailbox(email_address=addr) for addr in recipients]
 
             result = {
@@ -328,13 +379,14 @@ class ExchangeClient:
                 'protocol': 'ews',
                 'status': 'pending',
                 'message_id': original_email.get('message_id'),
+                'subject': subject_line,
             }
 
             if dry_run:
                 logger.info("=" * 60)
                 logger.info("DRY RUN MODE - Email NOT sent")
                 logger.info("To: %s", ', '.join(recipients))
-                logger.info("Subject: iCal-Bot: %s", original_email.get('subject'))
+                logger.info("Subject: %s", subject_line)
                 logger.info("Message length: %s chars", len(reply_message))
                 logger.info("Calendar invite attached (size: %s bytes)", len(ics_content))
                 logger.info("=" * 60)
@@ -345,7 +397,7 @@ class ExchangeClient:
             mime_msg = MIMEMultipart('mixed')
             mime_msg['From'] = self.email_address
             mime_msg['To'] = ', '.join(recipients)
-            mime_msg['Subject'] = f"iCal-Bot: {original_email['subject']}"
+            mime_msg['Subject'] = subject_line
 
             if original_email.get('message_id'):
                 mime_msg['In-Reply-To'] = original_email['message_id']

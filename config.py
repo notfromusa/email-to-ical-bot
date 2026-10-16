@@ -74,6 +74,8 @@ AUTO_APPROVE_EVENTS = os.getenv("AUTO_APPROVE_EVENTS", "false").lower() == "true
 # Calendar Configuration
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "Europe/Berlin")
 ORGANIZER_NAME = os.getenv("ORGANIZER_NAME", "iCal Bot")
+INVITE_SUBJECT_PREFIX = os.getenv("INVITE_SUBJECT_PREFIX", "")
+INVITE_SUBJECT_SUFFIX = os.getenv("INVITE_SUBJECT_SUFFIX", " (iCal-Bot)")
 
 # Testing & Monitoring Configuration
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"  # Set to true to preview without sending emails

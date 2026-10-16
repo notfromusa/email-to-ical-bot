@@ -421,11 +421,15 @@ class iCalBot:
                 return ProcessingResult(invite_sent=False, mark_processed=True, status="pending_approval")
 
             try:
+                email_payload = dict(email_data)
+                email_payload['event_title'] = primary_event.get('title')
                 self.email_client.send_reply_with_calendar(
-                    email_data,
+                    email_payload,
                     ics_content,
                     reply_message,
-                    dry_run=False
+                    dry_run=False,
+                    event_data=primary_event,
+                    event_title=primary_event.get('title'),
                 )
             except Exception as exc:
                 logger.error(f"Failed to send calendar invite: {exc}")
