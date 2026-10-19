@@ -55,8 +55,9 @@ class CalendarGenerator:
             String containing the .ics file content
         """
         try:
-            # Generate unique ID for the event
-            event_uid = str(uuid.uuid4())
+            # Use stable event UID if provided (e.g. for updates/resends), otherwise generate fresh UUID (RFC 5545 Section 3.8.4.7)
+            event_uid = (event_data.get('uid') or '').strip() or str(uuid.uuid4())
+            sequence = int(event_data.get('sequence', 0))
             
             # Parse datetime strings
             start_dt = self._parse_datetime(event_data['start_datetime'])
@@ -104,11 +105,11 @@ class CalendarGenerator:
             if attendee_lines:
                 ics_content.extend(attendee_lines)
             
-            # Add organizer
+            # Add organizer and sequence
             ics_content.extend([
                 f"ORGANIZER;CN={self.organizer_name}:mailto:{organizer_email}",
                 "STATUS:CONFIRMED",
-                "SEQUENCE:0",
+                f"SEQUENCE:{sequence}",
                 "END:VEVENT",
                 "END:VCALENDAR"
             ])

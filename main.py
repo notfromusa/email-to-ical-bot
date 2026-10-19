@@ -159,6 +159,7 @@ class iCalBot:
         approval_status: Optional[str] = None,
         sent: Optional[bool] = None,
         llm_error_count: Optional[int] = None,
+        calendar_item_id: Optional[str] = None,
     ) -> None:
         """Persist processing outcome in the storage layer."""
         if not hasattr(self, 'storage'):
@@ -203,6 +204,7 @@ class iCalBot:
                 approval_required=approval_required,
                 approval_status=approval_status,
                 llm_error_count=llm_error_count,
+                calendar_item_id=calendar_item_id,
             )
             if approval_required and approval_status == "pending":
                 self.storage.log_approval_action(email_id, "pending")
@@ -423,7 +425,7 @@ class iCalBot:
             try:
                 email_payload = dict(email_data)
                 email_payload['event_title'] = primary_event.get('title')
-                self.email_client.send_reply_with_calendar(
+                send_result = self.email_client.send_reply_with_calendar(
                     email_payload,
                     ics_content,
                     reply_message,
@@ -448,6 +450,7 @@ class iCalBot:
                 )
                 return ProcessingResult(invite_sent=False, mark_processed=True, status="send_error")
 
+            calendar_item_id = (send_result.get('calendar_item_id') if isinstance(send_result, dict) else None)
             self._record_processing_result(
                 email_data,
                 has_event=True,
@@ -459,9 +462,10 @@ class iCalBot:
                 llm_metadata=llm_metadata,
                 sent=True,
                 llm_error_count=0,
+                calendar_item_id=calendar_item_id,
             )
 
-            logger.info(f"✓ Calendar invite sent for: {primary_event['title']}")
+            logger.info(f"✓ Calendar invite processed for: {primary_event['title']}")
             return ProcessingResult(invite_sent=True, mark_processed=True, status="invite_sent")
             
         except Exception as e:

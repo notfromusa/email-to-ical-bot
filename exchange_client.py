@@ -12,9 +12,13 @@ from exchangelib import (
     Version,
     Build,
     EWSTimeZone,
+    EWSDateTime,
+    CalendarItem,
+    Attendee,
 )
+from exchangelib.items import SEND_TO_ALL_AND_SAVE_COPY, SEND_TO_NONE
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -298,20 +302,71 @@ class ExchangeClient:
         Returns:
             Extracted and unescaped SUMMARY string, or None if not found.
         """
-        if not ics_content:
+        return ExchangeClient._extract_field_from_ics(ics_content, "SUMMARY")
+
+    @staticmethod
+    def _extract_field_from_ics(ics_content: str, field_name: str) -> Optional[str]:
+        """Extract a property value from iCalendar (.ics) content unfolded and unescaped.
+
+        Per RFC 5545 Section 3.1, long lines are folded with CRLF followed by space/tab.
+        Text values escape commas, semicolons, backslashes, and newlines (RFC 5545 Section 3.3.11).
+
+        Args:
+            ics_content: Raw iCalendar file content string.
+            field_name: The iCalendar property name to extract (e.g. DTSTART, SUMMARY, LOCATION).
+
+        Returns:
+            Extracted and unescaped property string, or None if not found.
+        """
+        if not ics_content or not field_name:
             return None
-        for line in ics_content.splitlines():
-            if line.startswith("SUMMARY:"):
-                raw_summary = line[len("SUMMARY:"):].strip()
-                summary = (
-                    raw_summary.replace(r"\n", "\n")
-                    .replace(r"\N", "\n")
-                    .replace(r"\,", ",")
-                    .replace(r"\;", ";")
-                    .replace(r"\\", "\\")
+        pattern = rf"(?:^|\r?\n){field_name}(?:;[^:\r\n]*)?:([^\r\n]*(?:\r?\n[\t ][^\r\n]*)*)"
+        match = re.search(pattern, ics_content, re.IGNORECASE)
+        if not match:
+            return None
+        val = re.sub(r"\r?\n[\t ]", "", match.group(1))
+        return (
+            val.replace(r"\,", ",")
+            .replace(r"\;", ";")
+            .replace("\\\\", "\\")
+            .replace(r"\n", "\n")
+            .replace(r"\N", "\n")
+            .strip()
+            or None
+        )
+
+    def _to_ews_datetime(self, dt_val, default_tz: EWSTimeZone) -> EWSDateTime:
+        """Convert a datetime string or object into a timezone-aware EWSDateTime.
+
+        Args:
+            dt_val: datetime object, EWSDateTime, or ISO-8601 / iCalendar date string.
+            default_tz: The fallback EWSTimeZone to localize naive timestamps.
+
+        Returns:
+            EWSDateTime: Timezone-aware EWSDateTime localized in default_tz.
+        """
+        if isinstance(dt_val, EWSDateTime):
+            return dt_val.astimezone(default_tz)
+        if isinstance(dt_val, str):
+            normalized = dt_val.strip().replace('Z', '+00:00')
+            if 'T' not in normalized and ' ' in normalized:
+                normalized = normalized.replace(' ', 'T', 1)
+            if len(normalized) == 16 and normalized[8] == 'T' and normalized.endswith('+00:00'):
+                dt_val = datetime.strptime(normalized, '%Y%m%dT%H%M%S+00:00').replace(tzinfo=timezone.utc)
+            elif len(normalized) == 15 and normalized[8] == 'T':
+                dt_val = datetime.strptime(normalized, '%Y%m%dT%H%M%S')
+            else:
+                dt_val = datetime.fromisoformat(normalized)
+        if isinstance(dt_val, datetime):
+            if dt_val.tzinfo is None:
+                return default_tz.from_date(dt_val) if hasattr(default_tz, 'from_date') else EWSDateTime(
+                    dt_val.year, dt_val.month, dt_val.day, dt_val.hour, dt_val.minute, dt_val.second, tzinfo=default_tz
                 )
-                return summary.strip() or None
-        return None
+            res = dt_val.astimezone(default_tz)
+            if isinstance(res, EWSDateTime):
+                return res
+            return EWSDateTime.from_datetime(res)
+        raise ValueError(f"Cannot convert {dt_val} to EWSDateTime")
 
     def send_reply_with_calendar(
         self,
@@ -322,19 +377,23 @@ class ExchangeClient:
         event_data: Optional[Dict] = None,
         event_title: Optional[str] = None,
     ):
-        """Send a reply to an email with calendar invite attached via Exchange (EWS).
+        """Send a calendar invite via Exchange (EWS).
 
-        In accordance with RFC 6047 Section 2.3, the MIME Subject header field is
-        derived from the specific event title rather than the parent email subject,
-        ensuring Exchange/Outlook calendar views show the accurate event headline rather
-        than the generic message subject.
+        When EXCHANGE_DIRECT_CALENDAR_CREATION is enabled (Option A), creates or updates
+        the event directly in the user's primary Exchange calendar folder (account.calendar)
+        via EWS CalendarItem.save(). This ensures the user is the owner/organizer of the event
+        and can edit, reschedule, or cancel it natively in Outlook (RFC 5546 Section 1.4).
+
+        When disabled, falls back to sending a MIME message with an inline text/calendar part.
+        In accordance with RFC 6047 Section 2.3, the MIME Subject header field is derived from
+        the specific event title rather than the parent email subject.
 
         Args:
             original_email: Dictionary containing original email data.
             ics_content: iCalendar file content as string.
             reply_message: Message body for the reply.
             dry_run: If True, only preview without sending.
-            event_data: Optional dictionary containing event details (title, etc.).
+            event_data: Optional dictionary containing event details (title, start_datetime, etc.).
             event_title: Optional explicit title/short description of the event.
 
         Returns:
@@ -371,6 +430,139 @@ class ExchangeClient:
 
             subject_line = format_invite_subject(resolved_title, original_email.get('subject'))
 
+            # Check if direct calendar creation is enabled (Option A)
+            direct_calendar = getattr(config, 'EXCHANGE_DIRECT_CALENDAR_CREATION', True)
+            if direct_calendar:
+                start_val = (event_data.get('start_datetime') if event_data else None)
+                end_val = (event_data.get('end_datetime') if event_data else None)
+                location = (event_data.get('location') if event_data else None)
+                body_desc = (event_data.get('description') if event_data else None)
+
+                if not start_val and ics_content:
+                    start_val = self._extract_field_from_ics(ics_content, 'DTSTART')
+                if not end_val and ics_content:
+                    end_val = self._extract_field_from_ics(ics_content, 'DTEND')
+                if not location and ics_content:
+                    location = self._extract_field_from_ics(ics_content, 'LOCATION')
+                if not body_desc and ics_content:
+                    body_desc = self._extract_field_from_ics(ics_content, 'DESCRIPTION')
+
+                default_tz = self._get_default_timezone()
+                start_ews = None
+                end_ews = None
+                if start_val:
+                    try:
+                        start_ews = self._to_ews_datetime(start_val, default_tz)
+                        if end_val:
+                            end_ews = self._to_ews_datetime(end_val, default_tz)
+                        if not end_ews or end_ews <= start_ews:
+                            end_ews = start_ews + timedelta(hours=1)
+                    except Exception as exc:
+                        logger.warning("Could not convert start/end to EWSDateTime (%s); fallback to MIME email", exc)
+
+                category = getattr(config, 'CALENDAR_ITEM_CATEGORY', 'iCal-Bot')
+                categories = [category] if category else None
+
+                result = {
+                    'recipients': recipients,
+                    'dry_run': bool(dry_run),
+                    'protocol': 'ews',
+                    'status': 'pending',
+                    'message_id': original_email.get('message_id'),
+                    'subject': subject_line,
+                    'direct_calendar_item': True,
+                }
+
+                if dry_run:
+                    logger.info("=" * 60)
+                    logger.info("DRY RUN MODE - CalendarItem NOT saved to Exchange calendar")
+                    logger.info("To: %s", ', '.join(recipients))
+                    logger.info("Subject: %s", subject_line)
+                    logger.info("Start: %s, End: %s", start_ews, end_ews)
+                    logger.info("Location: %s", location or "(none)")
+                    logger.info("Categories: %s", categories or [])
+                    logger.info("Direct calendar mode enabled: user is organizer, editable natively in Outlook")
+                    logger.info("=" * 60)
+                    result['status'] = 'dry_run_preview'
+                    return result
+
+                # Only proceed with direct calendar saving if valid start time was resolved
+                if start_ews:
+                    if self.account is None:
+                        self._connect()
+
+                    external_recipients = [r for r in recipients if r.lower() != (self.email_address or '').lower()]
+                    invite_attendees = getattr(config, 'EXCHANGE_CALENDAR_INVITE_ATTENDEES', False)
+
+                    calendar_item = None
+                    existing_id = original_email.get('calendar_item_id')
+                    if existing_id:
+                        try:
+                            existing_item = self.account.calendar.get(id=existing_id)
+                            existing_item.subject = subject_line
+                            existing_item.start = start_ews
+                            existing_item.end = end_ews
+                            existing_item.body = body_desc or reply_message
+                            existing_item.location = location or None
+                            if categories:
+                                existing_item.categories = categories
+                            update_fields = ['subject', 'start', 'end', 'body', 'location']
+                            if categories:
+                                update_fields.append('categories')
+                            if external_recipients and invite_attendees:
+                                existing_item.required_attendees = external_recipients
+                                update_fields.append('required_attendees')
+                                existing_item.save(update_fields=update_fields, send_meeting_invitations=SEND_TO_ALL_AND_SAVE_COPY)
+                            else:
+                                existing_item.save(update_fields=update_fields, send_meeting_invitations=SEND_TO_NONE)
+                            calendar_item = existing_item
+                            logger.info("Updated existing CalendarItem %s in calendar: '%s'", calendar_item.id, subject_line)
+                        except Exception as upd_err:
+                            logger.warning("Could not update existing CalendarItem %s: %s; creating new one", existing_id, upd_err)
+
+                    if not calendar_item:
+                        new_item = CalendarItem(
+                            folder=self.account.calendar,
+                            subject=subject_line,
+                            body=body_desc or reply_message,
+                            start=start_ews,
+                            end=end_ews,
+                            location=location or None,
+                            categories=categories,
+                        )
+                        if external_recipients and invite_attendees:
+                            new_item.required_attendees = external_recipients
+                            new_item.save(send_meeting_invitations=SEND_TO_ALL_AND_SAVE_COPY)
+                        else:
+                            new_item.save(send_meeting_invitations=SEND_TO_NONE)
+                        calendar_item = new_item
+                        logger.info("Created new CalendarItem %s in Exchange calendar: '%s'", calendar_item.id, subject_line)
+
+                    result['status'] = 'sent'
+                    result['calendar_item_id'] = getattr(calendar_item, 'id', None)
+
+                    # Optional confirmation email to thread
+                    if getattr(config, 'EXCHANGE_SEND_CONFIRMATION_EMAIL', False):
+                        try:
+                            mailbox_recipients = [Mailbox(email_address=addr) for addr in recipients]
+                            conf_msg = Message(
+                                account=self.account,
+                                to_recipients=mailbox_recipients,
+                                subject=f"Added to Calendar: {subject_line}",
+                                body=reply_message,
+                            )
+                            if original_email.get('message_id'):
+                                conf_msg.in_reply_to = original_email['message_id']
+                                conf_msg.references = original_email['message_id']
+                            conf_msg.send()
+                            result['message_id'] = getattr(conf_msg, 'message_id', result['message_id'])
+                            logger.info("Confirmation email sent to %s", ', '.join(recipients))
+                        except Exception as conf_err:
+                            logger.warning("Failed to send confirmation email: %s", conf_err)
+
+                    return result
+
+            # Fallback legacy MIME email sending path
             mailbox_recipients = [Mailbox(email_address=addr) for addr in recipients]
 
             result = {

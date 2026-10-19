@@ -384,12 +384,17 @@ def _format_send_result_note(result):
     if not result:
         return None
     parts = []
+    if result.get('direct_calendar_item'):
+        parts.append("Saved directly to Exchange calendar (editable)")
     recipients = result.get('recipients') or []
     if recipients:
         parts.append(f"Recipients: {', '.join(recipients)}")
     protocol = result.get('protocol')
     if protocol:
         parts.append(f"Protocol: {protocol}")
+    cal_id = result.get('calendar_item_id')
+    if cal_id:
+        parts.append(f"CalendarItem-ID: {cal_id}")
     message_id = result.get('message_id')
     if message_id:
         parts.append(f"Message-ID: {message_id}")
@@ -410,6 +415,7 @@ def _send_calendar_invite_from_record(record, recipients_override=None, selected
         'sender': record.get('email_sender'),
         'message_id': record.get('email_message_id') or record.get('email_id'),
         'recipients': recipients,
+        'calendar_item_id': record.get('calendar_item_id'),
     }
     if hasattr(mail_client, 'get_message_by_id') and callable(getattr(mail_client, 'get_message_by_id')):
         original_msg = mail_client.get_message_by_id(original_email.get('message_id'))
@@ -567,6 +573,7 @@ def api_approve_event(email_id):
             ics_content=ics_content,
             email_recipients=send_result.get('recipients') if send_result else None,
             action='resent' if is_resend else None,
+            calendar_item_id=send_result.get('calendar_item_id') if send_result else None,
         )
         action_verb = "Re-sent" if is_resend else "Approved and sent"
         if send_result and send_result.get('recipients'):

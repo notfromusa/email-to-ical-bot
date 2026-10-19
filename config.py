@@ -77,6 +77,14 @@ ORGANIZER_NAME = os.getenv("ORGANIZER_NAME", "iCal Bot")
 INVITE_SUBJECT_PREFIX = os.getenv("INVITE_SUBJECT_PREFIX", "")
 INVITE_SUBJECT_SUFFIX = os.getenv("INVITE_SUBJECT_SUFFIX", " (iCal-Bot)")
 
+# Exchange Direct Calendar Configuration (Option A: native Outlook editability)
+# When EMAIL_PROTOCOL=EXCHANGE, creates events directly in the user's Exchange calendar folder
+# via EWS CalendarItem.save(), ensuring the user is the organizer and can edit events in Outlook natively.
+EXCHANGE_DIRECT_CALENDAR_CREATION = os.getenv("EXCHANGE_DIRECT_CALENDAR_CREATION", "true").lower() == "true"
+EXCHANGE_CALENDAR_INVITE_ATTENDEES = os.getenv("EXCHANGE_CALENDAR_INVITE_ATTENDEES", "false").lower() == "true"
+EXCHANGE_SEND_CONFIRMATION_EMAIL = os.getenv("EXCHANGE_SEND_CONFIRMATION_EMAIL", "false").lower() == "true"
+CALENDAR_ITEM_CATEGORY = os.getenv("CALENDAR_ITEM_CATEGORY", "iCal-Bot")
+
 # Testing & Monitoring Configuration
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"  # Set to true to preview without sending emails
 

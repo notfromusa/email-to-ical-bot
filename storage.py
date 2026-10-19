@@ -112,6 +112,7 @@ class StorageManager:
             "approved_by": "TEXT",
             "sent_event_indices": "TEXT",
             "llm_error_count": "INTEGER NOT NULL DEFAULT 0",
+            "calendar_item_id": "TEXT",
         }
         existing = {
             row["name"] for row in conn.execute("PRAGMA table_info('processed_results')")
@@ -149,6 +150,7 @@ class StorageManager:
         approval_required: bool = False,
         approval_status: Optional[str] = None,
         llm_error_count: Optional[int] = None,
+        calendar_item_id: Optional[str] = None,
     ) -> None:
         """Insert or update a processed email result."""
         processed_at = datetime.utcnow().isoformat()
@@ -185,6 +187,7 @@ class StorageManager:
             "error": error,
             "sent_event_indices": "[]",
             "llm_error_count": int(llm_error_count) if llm_error_count is not None else 0,
+            "calendar_item_id": calendar_item_id,
         }
 
         if event_data:
@@ -207,14 +210,16 @@ class StorageManager:
                     event_start, event_end, event_location, event_candidates, selected_event_index,
                     llm_prompt, llm_response,
                     llm_raw_result, prompt_injection, ics_preview, ics_content, sent, dry_run,
-                    approval_required, approval_status, status, error, sent_event_indices, llm_error_count
+                    approval_required, approval_status, status, error, sent_event_indices, llm_error_count,
+                    calendar_item_id
                 ) VALUES (
                     :email_id, :email_message_id, :email_subject, :email_sender, :email_date,
                     :email_recipients, :email_body, :processed_at, :has_event, :event_title, :event_description,
                     :event_start, :event_end, :event_location, :event_candidates, :selected_event_index,
                     :llm_prompt, :llm_response,
                     :llm_raw_result, :prompt_injection, :ics_preview, :ics_content, :sent, :dry_run,
-                    :approval_required, :approval_status, :status, :error, :sent_event_indices, :llm_error_count
+                    :approval_required, :approval_status, :status, :error, :sent_event_indices, :llm_error_count,
+                    :calendar_item_id
                 )
                 ON CONFLICT(email_id) DO UPDATE SET
                     email_message_id=excluded.email_message_id,
@@ -244,7 +249,8 @@ class StorageManager:
                     approval_status=excluded.approval_status,
                     status=excluded.status,
                     error=excluded.error,
-                    llm_error_count=excluded.llm_error_count
+                    llm_error_count=excluded.llm_error_count,
+                    calendar_item_id=COALESCE(excluded.calendar_item_id, processed_results.calendar_item_id)
                 """,
                 payload,
             )
@@ -339,6 +345,7 @@ class StorageManager:
         ics_content: Optional[str] = None,
         email_recipients: Optional[List[str]] = None,
         action: Optional[str] = None,
+        calendar_item_id: Optional[str] = None,
     ) -> None:
         timestamp = datetime.utcnow().isoformat()
         ics_preview = None
@@ -417,6 +424,7 @@ class StorageManager:
                     email_recipients = COALESCE(:email_recipients, email_recipients),
                     ics_content = COALESCE(:ics_content, ics_content),
                     ics_preview = COALESCE(:ics_preview, ics_preview),
+                    calendar_item_id = COALESCE(:calendar_item_id, calendar_item_id),
                     error = :error
                 WHERE email_id = :email_id
                 """,
@@ -437,6 +445,7 @@ class StorageManager:
                     "email_recipients": json.dumps(email_recipients) if email_recipients else None,
                     "ics_content": ics_content,
                     "ics_preview": ics_preview,
+                    "calendar_item_id": calendar_item_id,
                     "error": error,
                     "email_id": email_id,
                 },

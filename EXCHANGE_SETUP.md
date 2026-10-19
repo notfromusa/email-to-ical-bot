@@ -16,9 +16,34 @@ EXCHANGE_VERSION=Office365
 EXCHANGE_EMAIL=your-email@example.com
 EXCHANGE_USERNAME=
 EXCHANGE_AUTODISCOVER=true
+
+# Exchange Direct Calendar Configuration (Option A: native Outlook editability)
+EXCHANGE_DIRECT_CALENDAR_CREATION=true
+EXCHANGE_CALENDAR_INVITE_ATTENDEES=true
+EXCHANGE_SEND_CONFIRMATION_EMAIL=false
+CALENDAR_ITEM_CATEGORY="iCal-Bot"
 ```
 
 `EXCHANGE_USERNAME` is optional. Set it only if your organization requires a login name that differs from your mailbox address.
+
+## Calendar Integration & Outlook Editability
+
+### The Editability Problem (RFC 5546)
+Under standard iCalendar interoperability protocols ([RFC 5546 Section 1.4](https://www.rfc-editor.org/rfc/rfc5546)), only the meeting `ORGANIZER` can modify event times, locations, and descriptions. Attendees only have permission to reply (`ACCEPT`/`DECLINE`) or counter-propose times.
+- If the bot emails an `.ics` with a bot identity as the organizer, Outlook marks the event **read-only** for you.
+- If the bot emails an `.ics` listing *you* as the organizer, Exchange silently drops the invite because incoming meeting requests sent to oneself are not added to the organizer's calendar.
+
+### Direct Calendar Creation (Option A)
+When `EXCHANGE_DIRECT_CALENDAR_CREATION=true` (enabled by default):
+- The bot creates the event directly in your Exchange primary calendar (`account.calendar`) using EWS `CalendarItem.save()`.
+- **You are the meeting organizer**: You can edit the title, drag-and-drop reschedule the time, modify notes, or delete the event natively in Outlook (desktop, web, or mobile).
+- **In-place updates**: When you edit details or re-send an invite from the Web UI, the bot updates the existing Exchange calendar item in-place using its item ID, preventing duplicate calendar entries.
+- **Visual tagging**: Events receive the ` (iCal-Bot)` title suffix and the `iCal-Bot` Outlook category badge.
+
+### Inviting External Attendees
+Controlled via `EXCHANGE_CALENDAR_INVITE_ATTENDEES`:
+- `EXCHANGE_CALENDAR_INVITE_ATTENDEES=true`: Any external recipients checked in the Web UI recipient picker receive meeting invitations directly from your Exchange mailbox (`SEND_TO_ALL_AND_SAVE_COPY`).
+- If you deselect all external recipients in the UI (or set `EXCHANGE_CALENDAR_INVITE_ATTENDEES=false`), the event is saved as an appointment only for yourself (`SEND_TO_NONE`), sending zero outgoing emails.
 
 ## Test the Connection
 
