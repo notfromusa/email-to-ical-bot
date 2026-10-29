@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="16" fill="#0b1221"/>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15.25" fill="none" stroke="#223254" stroke-width="1.5"/>
+  <!-- Top header accent background -->
+  <rect x="10" y="14" width="44" height="14" rx="6" fill="#3dd5a8"/>
+  <!-- Calendar body -->
+  <path d="M 10 22 L 54 22 L 54 48 A 6 6 0 0 1 48 54 L 16 54 A 6 6 0 0 1 10 48 Z" fill="#13203c" stroke="#25355a" stroke-width="1"/>
+  <!-- Header top bar -->
+  <rect x="10" y="14" width="44" height="10" rx="4" fill="#3dd5a8"/>
+  <!-- Binder pegs -->
+  <rect x="18" y="9" width="5" height="10" rx="2.5" fill="#ffffff"/>
+  <rect x="41" y="9" width="5" height="10" rx="2.5" fill="#ffffff"/>
+  <!-- Grid items: muted dots for regular days -->
+  <circle cx="21" cy="32" r="2.75" fill="#9fb0d3"/>
+  <circle cx="32" cy="32" r="2.75" fill="#9fb0d3"/>
+  <circle cx="43" cy="32" r="2.75" fill="#9fb0d3"/>
+  
+  <circle cx="21" cy="43" r="2.75" fill="#9fb0d3"/>
+  <!-- Highlighted scheduled event block in vibrant accent orange -->
+  <rect x="27.5" y="38.5" width="9" height="9" rx="2.5" fill="#ff8c32"/>
+  <!-- Active bot/sync indicator dot in teal -->
+  <circle cx="43" cy="43" r="2.75" fill="#3dd5a8"/>
+</svg>

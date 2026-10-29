@@ -13,7 +13,7 @@ try:
 except Exception:
     ZoneInfo = None
 
-from flask import Flask, Response, render_template, jsonify, request, session, redirect, url_for
+from flask import Flask, Response, render_template, jsonify, request, session, redirect, url_for, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
@@ -127,7 +127,7 @@ def enforce_auth():
     path = request.path or ''
     if getattr(config, 'REQUIRE_HTTPS_FOR_REMOTE', True) and not _is_local_request() and not _is_secure_request():
         return Response('HTTPS required', 400)
-    if path.startswith('/setup') or path.startswith('/login'):
+    if path.startswith('/setup') or path.startswith('/login') or path.startswith('/static') or path == '/favicon.ico':
         return None
     if not _auth_configured():
         if not _is_local_request():
@@ -477,6 +477,21 @@ def get_stats():
 def index():
     """Main dashboard"""
     return render_template('index.html')
+
+
+@app.route('/favicon.ico')
+def favicon():
+    """
+    Serve the favicon.ico file from the static directory.
+
+    Returns:
+        Response: Binary stream response for favicon.ico.
+    """
+    return send_from_directory(
+        os.path.join(app.root_path, 'static'),
+        'favicon.ico',
+        mimetype='image/vnd.microsoft.icon'
+    )
 
 
 @app.route('/api/events')
