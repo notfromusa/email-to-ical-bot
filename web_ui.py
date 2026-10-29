@@ -470,6 +470,11 @@ def get_stats():
         }
     )
     stats.setdefault('total_events', stats.get('events_detected', 0))
+    try:
+        from workload_monitor import get_workload_monitor
+        stats['workload'] = get_workload_monitor().get_status()
+    except Exception as exc:
+        stats['workload'] = {'error': str(exc)}
     return stats
 
 
@@ -775,6 +780,13 @@ def api_stats():
     if not _credentials_ready():
         return jsonify({'error': 'Mailbox credentials are not configured'}), 409
     return jsonify(get_stats())
+
+
+@app.route('/api/workload-status')
+def api_workload_status():
+    """API endpoint for workstation GPU/CPU workload and cooldown status"""
+    from workload_monitor import get_workload_monitor
+    return jsonify(get_workload_monitor().get_status())
 
 
 @app.route('/api/config')

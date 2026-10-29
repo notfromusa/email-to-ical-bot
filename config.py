@@ -47,6 +47,15 @@ LLM_THINK = os.getenv("LLM_THINK", "")  # Optional explicit thinking override ("
 LLM_MAX_RETRY_ATTEMPTS = int(os.getenv("LLM_MAX_RETRY_ATTEMPTS", "1"))
 RESULTS_DB_PATH = os.getenv("RESULTS_DB_PATH", "data/processed_results.db")
 
+# System Workload & Opportunistic Execution Configuration
+WORKLOAD_MONITOR_ENABLED = os.getenv("WORKLOAD_MONITOR_ENABLED", "true").lower() == "true"
+WORKLOAD_VRAM_THRESHOLD_MB = int(os.getenv("WORKLOAD_VRAM_THRESHOLD_MB", "500"))
+WORKLOAD_GPU_UTIL_THRESHOLD = int(os.getenv("WORKLOAD_GPU_UTIL_THRESHOLD", "30"))
+WORKLOAD_CPU_THRESHOLD_PCT = int(os.getenv("WORKLOAD_CPU_THRESHOLD_PCT", "70"))
+WORKLOAD_CPU_SUSTAINED_POLLS = int(os.getenv("WORKLOAD_CPU_SUSTAINED_POLLS", "3"))
+WORKLOAD_COOLDOWN_SECONDS = int(os.getenv("WORKLOAD_COOLDOWN_SECONDS", "300"))
+WORKLOAD_WHITELISTED_PROCS = os.getenv("WORKLOAD_WHITELISTED_PROCS", "")
+
 # Attachment extraction configuration
 ATTACHMENT_PARSING_ENABLED = os.getenv("ATTACHMENT_PARSING_ENABLED", "true").lower() == "true"
 ATTACHMENT_MAX_FILE_SIZE_BYTES = int(os.getenv("ATTACHMENT_MAX_FILE_SIZE_BYTES", "5242880"))

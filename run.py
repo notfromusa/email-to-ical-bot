@@ -23,13 +23,20 @@ logger = logging.getLogger(__name__)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
+import signal
+from workload_monitor import get_workload_monitor
+
+active_bot = None
+
+
 def run_bot(once=False):
     """Run the bot in a separate thread"""
-    bot = iCalBot()
+    global active_bot
+    active_bot = iCalBot()
     if once:
-        bot.run_once()
+        active_bot.run_once()
     else:
-        bot.run_continuous()
+        active_bot.run_continuous()
 
 
 def wait_for_credentials_and_start():
@@ -74,11 +81,30 @@ def main():
         # Give bot a moment to start
         time.sleep(2)
         
+        def handle_shutdown(signum, frame):
+            logger.info("Signal %s received. Shutting down gracefully...", signum)
+            if active_bot:
+                active_bot.stop()
+            try:
+                get_workload_monitor().unload_model()
+            except Exception:
+                pass
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, handle_shutdown)
+        signal.signal(signal.SIGINT, handle_shutdown)
+
         # Start web UI in main thread
         try:
             run_web_ui()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SystemExit):
             logger.info("\nShutting down...")
+            if active_bot:
+                active_bot.stop()
+            try:
+                get_workload_monitor().unload_model()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

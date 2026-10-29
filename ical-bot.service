@@ -1,0 +1,41 @@
+[Unit]
+Description=iCal Bot - Automated Email to Calendar Invite Service
+Documentation=https://github.com/notfromusa/email-to-ical-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vincentofosu
+Group=vincentofosu
+WorkingDirectory=/data/workspace/iCal_bot_git
+
+# ExecStart runs via uv or project venv
+ExecStart=/home/ofosu/.local/bin/uv run run.py
+
+# Graceful shutdown: sends SIGTERM (handled cleanly by run.py to unload model), then SIGKILL after 20s
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Auto-restart on failure (does not restart on clean exit via systemctl stop)
+Restart=on-failure
+RestartSec=10
+
+# Environment
+EnvironmentFile=-/data/workspace/iCal_bot_git/.env
+Environment=PATH=/home/ofosu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/ofosu
+Environment=PYTHONUNBUFFERED=1
+
+# Logging goes to journald (view with: journalctl -u ical-bot -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ical-bot
+
+# Security settings
+ProtectSystem=false
+PrivateTmp=false
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

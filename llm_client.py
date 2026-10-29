@@ -45,6 +45,14 @@ class LLMError(Exception):
         self.metadata = metadata or {}
 
 
+class LLMTimeoutError(LLMError):
+    """Exception raised specifically when an LLM inference call times out."""
+    pass
+
+
+from workload_monitor import WorkloadYieldError, get_workload_monitor
+
+
 class LLMClient:
     def __init__(self):
         self.endpoint = config.LLM_ENDPOINT
@@ -141,6 +149,13 @@ class LLMClient:
         response_text = None
         raw_result = None
         try:
+            from workload_monitor import get_workload_monitor
+            can_run, yield_reason = get_workload_monitor().can_run_llm()
+            if not can_run:
+                logger.warning("Yielding LLM inference to system workload: %s", yield_reason)
+                metadata["error"] = yield_reason
+                raise WorkloadYieldError(yield_reason, metadata=metadata)
+
             if self._contains_prompt_injection(email_body):
                 metadata["prompt_injection"] = True
             response_text, raw_result = self._call_llm(prompt)
@@ -184,6 +199,11 @@ class LLMClient:
                 logger.info("No event detected in email")
                 return None, metadata
                 
+        except WorkloadYieldError as e:
+            e.metadata.update(metadata)
+            metadata["error"] = str(e)
+            logger.info("LLM yielding for '%s': %s", email_subject, e)
+            raise
         except LLMError as e:
             e.metadata.update(metadata)
             metadata["error"] = str(e)
@@ -422,37 +442,49 @@ Respond with ONLY the JSON object, nothing else:"""
             self.timeout,
         )
         start_time = time.time()
+        monitor = get_workload_monitor()
+        monitor.set_llm_active(True)
         try:
-            response = requests.post(
-                self.endpoint,
-                json=payload,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            result = response.json()
-        except requests.exceptions.Timeout as exc:
-            elapsed = time.time() - start_time
-            err_msg = (
-                f"LLM request timed out after {elapsed:.1f}s "
-                f"(configured timeout: {self.timeout}s, model: {self.model})"
-            )
-            logger.error(err_msg)
-            raise LLMError(err_msg, original_exception=exc) from exc
-        except requests.exceptions.RequestException as exc:
-            elapsed = time.time() - start_time
-            err_detail = ""
-            if hasattr(exc, "response") and exc.response is not None:
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    json=payload,
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+                result = response.json()
+            except requests.exceptions.Timeout as exc:
+                elapsed = time.time() - start_time
+                err_msg = (
+                    f"LLM request timed out after {elapsed:.1f}s "
+                    f"(configured timeout: {self.timeout}s, model: {self.model})"
+                )
+                logger.error(err_msg)
                 try:
-                    err_detail = f" [Status: {exc.response.status_code}, Body: {exc.response.text[:250]}]"
-                except Exception:
-                    pass
-            err_msg = f"LLM request failed after {elapsed:.1f}s: {exc}{err_detail}"
-            logger.error(err_msg)
-            raise LLMError(err_msg, original_exception=exc) from exc
-        except json.JSONDecodeError as exc:
-            err_msg = f"LLM endpoint returned invalid JSON response: {exc}"
-            logger.error(err_msg)
-            raise LLMError(err_msg, original_exception=exc) from exc
+                    monitor.trigger_cooldown(
+                        reason=f"LLM request timed out after {elapsed:.1f}s (configured timeout: {self.timeout}s)",
+                        unload_vram=True,
+                    )
+                except Exception as mon_exc:
+                    logger.debug("Workload monitor cooldown trigger failed: %s", mon_exc)
+                raise LLMTimeoutError(err_msg, original_exception=exc) from exc
+            except requests.exceptions.RequestException as exc:
+                elapsed = time.time() - start_time
+                err_detail = ""
+                if hasattr(exc, "response") and exc.response is not None:
+                    try:
+                        err_detail = f" [Status: {exc.response.status_code}, Body: {exc.response.text[:250]}]"
+                    except Exception:
+                        pass
+                err_msg = f"LLM request failed after {elapsed:.1f}s: {exc}{err_detail}"
+                logger.error(err_msg)
+                raise LLMError(err_msg, original_exception=exc) from exc
+            except json.JSONDecodeError as exc:
+                err_msg = f"LLM endpoint returned invalid JSON response: {exc}"
+                logger.error(err_msg)
+                raise LLMError(err_msg, original_exception=exc) from exc
+        finally:
+            monitor.set_llm_active(False)
 
         text = result.get('response') or ''
         if not text:

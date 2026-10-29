@@ -316,6 +316,61 @@ Tweak the `build_reply_message` helper in `messaging.py` to change disclaimers o
 - Keep your LLM local to maintain privacy
 - Attachment extraction is limited to bounded, text-safe formats (`.txt`, `.md`, `.csv`, `.log`, `.pdf`, `.docx`) and can be disabled in the UI
 
+## Background Service & Opportunistic Execution
+
+### 🚀 Running as a Background Service (systemd)
+
+You can run iCal Bot as an automated background service that survives terminal closures and reboots:
+
+#### User Service (Recommended, No Sudo Required)
+Runs in your user session and logs to your user journal:
+```bash
+# Install and auto-start under your user account:
+bash install_service.sh install --user
+
+# Useful management commands:
+bash install_service.sh status --user    # Check running status
+bash install_service.sh logs --user      # Follow live journal logs
+bash install_service.sh restart --user   # Restart service
+bash install_service.sh uninstall --user # Stop and remove service
+```
+
+#### System Service (System-Wide, Auto-Starts on Boot)
+```bash
+# Install and enable system-wide service:
+sudo bash install_service.sh install
+
+# Useful management commands:
+sudo bash install_service.sh status
+sudo bash install_service.sh logs
+sudo bash install_service.sh restart
+sudo bash install_service.sh uninstall
+```
+
+---
+
+### 🛡️ Opportunistic Workload Yielding & Cooldown Management
+
+When running on a shared workstation or a machine used for graphics/ML tasks (e.g. PyTorch, Blender, 4DGS simulations):
+- **GPU Activity Monitoring**: Monitors `nvidia-smi` compute processes. If a non-whitelisted process exceeds `WORKLOAD_VRAM_THRESHOLD_MB` (default: 500 MiB), the bot immediately yields.
+- **GPU Utilization Monitoring**: Monitors GPU utilization percentage. If non-Ollama activity exceeds `WORKLOAD_GPU_UTIL_THRESHOLD` (default: 30%), the bot yields.
+- **Host CPU Load Monitoring**: Checks consecutive `/proc/stat` CPU usage against `WORKLOAD_CPU_THRESHOLD_PCT` (default: 70%).
+- **Native Model Unloading**: Unlike containerized environments, the bot natively unloads the LLM from VRAM via Ollama's HTTP API (`keep_alive: 0`) and `ollama stop`, freeing GPU memory completely.
+- **Backoff Cooldown**: Enters a configurable cooldown (`WORKLOAD_COOLDOWN_SECONDS`, default: 300s) before re-attempting LLM operations.
+- **Automatic Retrying of Timed-Out Requests**: When an LLM request times out due to system load or preemption, it triggers cooldown and the email is **not** discarded or marked as failed. Instead, the bot waits for the system to become idle and automatically retries processing as soon as the LLM is available again.
+
+Configure thresholds in `.env`:
+```env
+WORKLOAD_MONITOR_ENABLED=true
+WORKLOAD_VRAM_THRESHOLD_MB=500
+WORKLOAD_GPU_UTIL_THRESHOLD=30
+WORKLOAD_CPU_THRESHOLD_PCT=70
+WORKLOAD_CPU_SUSTAINED_POLLS=3
+WORKLOAD_COOLDOWN_SECONDS=300
+```
+
+---
+
 ## Deployment (Docker + reverse proxy)
 
 1. Copy `.env.example` to `.env` and set real values. Keep `ENABLE_DEBUG_DUMPS=false` in production.
