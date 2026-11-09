@@ -243,3 +243,62 @@ def test_process_email_yielding_and_timeout_retry(tmp_path):
         recovered = bot.recover_pending_retry_emails()
         assert "email-workload-1" in recovered
         assert "email-workload-1" not in bot.processed_emails
+
+
+def test_is_model_loaded_queries_ollama_ps():
+    """Verify is_model_loaded correctly parses Ollama /api/ps response."""
+    monitor = WorkloadMonitor(enabled=True)
+
+    # 1. Model present in response
+    mock_resp_loaded = MagicMock(
+        status_code=200,
+        json=lambda: {"models": [{"name": "gemma4-hermes:31b", "size": 22000000000}]},
+    )
+    with patch("requests.get", return_value=mock_resp_loaded):
+        assert monitor.is_model_loaded("gemma4-hermes:31b") is True
+        assert monitor.is_model_loaded("other-model") is True  # non-empty models fallback
+
+    # 2. No models loaded
+    mock_resp_empty = MagicMock(
+        status_code=200,
+        json=lambda: {"models": []},
+    )
+    with patch("requests.get", return_value=mock_resp_empty):
+        assert monitor.is_model_loaded("gemma4-hermes:31b") is False
+
+    # 3. Network error -> returns False gracefully without throwing
+    with patch("requests.get", side_effect=requests.exceptions.ConnectionError("Connection refused")):
+        assert monitor.is_model_loaded("gemma4-hermes:31b") is False
+
+
+def test_get_status_includes_model_loaded():
+    """Verify get_status returns the model_loaded field."""
+    monitor = WorkloadMonitor(enabled=True)
+    with patch.object(monitor, "is_model_loaded", return_value=True):
+        status = monitor.get_status()
+        assert status["model_loaded"] is True
+
+    with patch.object(monitor, "is_model_loaded", return_value=False):
+        status = monitor.get_status()
+        assert status["model_loaded"] is False
+
+
+def test_run_once_proactively_unloads_model(tmp_path):
+    """Verify that run_once() proactively calls unload_model() in finally block."""
+    db_file = tmp_path / "test_workload_db.db"
+    processed_file = tmp_path / "processed_workload.json"
+
+    with patch("config.RESULTS_DB_PATH", str(db_file)), \
+         patch("config.PROCESSED_EMAILS_FILE", str(processed_file)), \
+         patch("config.EMAIL_PROTOCOL", "IMAP"):
+
+        bot = iCalBot()
+        monitor = get_workload_monitor()
+
+        with patch.object(monitor, "can_run_llm", return_value=(True, "System idle")), \
+             patch.object(bot.email_client, "fetch_unprocessed_emails", return_value=([], False)), \
+             patch.object(monitor, "unload_model") as mock_unload:
+
+            bot.run_once()
+            assert mock_unload.called
+

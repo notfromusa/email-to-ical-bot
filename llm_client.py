@@ -58,7 +58,7 @@ class LLMClient:
         self.endpoint = config.LLM_ENDPOINT
         self.model = config.LLM_MODEL
         self.timeout = int(getattr(config, 'LLM_TIMEOUT_SECONDS', 300))
-        self.keep_alive = getattr(config, 'LLM_KEEP_ALIVE', '65m')
+        self.keep_alive = getattr(config, 'LLM_KEEP_ALIVE', '5m')
         self.think = getattr(config, 'LLM_THINK', '')
         configured_tz = (getattr(config, 'DEFAULT_TIMEZONE', '') or '').strip()
         if not configured_tz or configured_tz.upper() == 'UTC':

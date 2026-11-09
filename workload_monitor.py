@@ -415,6 +415,41 @@ class WorkloadMonitor:
 
         return None
 
+    def is_model_loaded(self, model_name: Optional[str] = None) -> bool:
+        """Check whether the target model or any LLM model is currently resident in VRAM.
+
+        Queries the Ollama /api/ps endpoint to verify active residency without
+        triggering side effects.
+
+        Args:
+            model_name: Optional model tag; defaults to config.LLM_MODEL.
+
+        Returns:
+            bool: True if the model is currently resident in VRAM, False otherwise.
+        """
+        target_model = model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b")
+        endpoint = getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/generate")
+        base_url = endpoint.rsplit("/", 1)[0]
+        ps_url = f"{base_url}/ps"
+
+        try:
+            resp = requests.get(ps_url, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                loaded_models = data.get("models") or []
+                if not loaded_models:
+                    return False
+                target_base = target_model.split(":")[0].lower()
+                for m in loaded_models:
+                    m_name = (m.get("name") or m.get("model") or "").lower()
+                    if target_base in m_name or target_model.lower() in m_name or m_name in target_model.lower():
+                        return True
+                return len(loaded_models) > 0
+        except Exception as exc:
+            logger.debug("Ollama /api/ps check encountered: %s", exc)
+
+        return False
+
     def unload_model(self, model_name: Optional[str] = None) -> bool:
         """Unload the active LLM model from VRAM to yield resources immediately.
 
@@ -573,9 +608,16 @@ class WorkloadMonitor:
         else:
             msg = "System idle; LLM available"
 
+        model_loaded = False
+        try:
+            model_loaded = self.is_model_loaded()
+        except Exception:
+            pass
+
         return {
             "enabled": self.enabled,
             "llm_active": self._llm_active,
+            "model_loaded": model_loaded,
             "can_run_llm": not in_cooldown,
             "status_message": msg,
             "in_cooldown": in_cooldown,

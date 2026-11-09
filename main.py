@@ -665,6 +665,13 @@ class iCalBot:
         
         except Exception as e:
             logger.error(f"Error during email check: {e}")
+        finally:
+            # Proactively unload the LLM model from VRAM since the bot will be idle
+            # until the next scheduled check interval or manual trigger.
+            try:
+                monitor.unload_model()
+            except Exception as unload_exc:
+                logger.debug("Failed to proactively unload model after email check: %s", unload_exc)
     
     def run_continuous(self):
         """Run continuously, checking emails at regular intervals and retrying when LLM is available."""

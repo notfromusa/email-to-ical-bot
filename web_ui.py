@@ -789,6 +789,18 @@ def api_workload_status():
     return jsonify(get_workload_monitor().get_status())
 
 
+@app.route('/api/workload/unload', methods=['POST'])
+def api_workload_unload():
+    """API endpoint to explicitly unload the active LLM model from VRAM and yield GPU."""
+    from workload_monitor import get_workload_monitor
+    monitor = get_workload_monitor()
+    success = monitor.unload_model()
+    return jsonify({
+        'ok': success,
+        'status': monitor.get_status(),
+    })
+
+
 @app.route('/api/config')
 def api_config():
     """API endpoint for configuration"""
