@@ -661,6 +661,7 @@ def api_rescan_event(email_id):
     payload = request.get_json(silent=True) or {} if request.is_json else {}
     double_check = bool(payload.get('double_check', False))
     actor = payload.get('approver') or payload.get('actor') or 'User'
+    rescan_hint = payload.get('hint') or payload.get('notes') or payload.get('rescan_hint')
 
     mail_client = ExchangeClient() if config.EMAIL_PROTOCOL == "EXCHANGE" else EmailClient()
     try:
@@ -684,6 +685,8 @@ def api_rescan_event(email_id):
             email_data['subject'],
             reference_timestamp=email_data.get('date'),
             double_check=double_check,
+            is_rescan=True,
+            rescan_hint=rescan_hint,
         )
     except Exception as exc:
         app.logger.error("LLM extraction failed during rescan for %s: %s", email_id, exc)
@@ -735,6 +738,8 @@ def api_rescan_event(email_id):
     note_text = 'Rescanned email from mailbox'
     if double_check:
         note_text += ' with double-check QA loop'
+    if rescan_hint:
+        note_text += f' (hint: {rescan_hint[:50]})'
     storage.log_approval_action(email_id, 'rescanned', actor=actor, note=note_text)
 
     updated_record = storage.get_result(email_id)

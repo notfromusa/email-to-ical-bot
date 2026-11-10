@@ -3,11 +3,66 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional, Union
 
 _FIELD_SEPARATOR = "\x1f"
+
+# Match common forward prefixes (e.g. English Fwd/FW, German WG, French TR, Spanish VS/RV, Italian I)
+# per RFC 5322 section 3.6.5 subject conventions and common MUA localizations.
+FORWARD_SUBJECT_PREFIX_REGEX = re.compile(
+    r'^(?:\[[^\]]*\]\s*)*(?:fwd?|fw|wg|vs|tr|rv|fs)\b[\s:]',
+    re.IGNORECASE,
+)
+REPLY_SUBJECT_PREFIX_REGEX = re.compile(
+    r'^(?:\[[^\]]*\]\s*)*(?:re|aw|antw|antwort)\b[\s:]',
+    re.IGNORECASE,
+)
+FORWARD_BODY_PATTERNS = [
+    re.compile(r'[-=]{3,}\s*(?:forwarded message|weitergeleitete nachricht)\s*[-=]{3,}', re.IGNORECASE),
+    re.compile(r'begin forwarded message:', re.IGNORECASE),
+    re.compile(r'anfang der weitergeleiteten nachricht:', re.IGNORECASE),
+]
+
+
+def is_forwarded_email(subject: Optional[str] = None, body: Optional[str] = None) -> bool:
+    """Determine whether an email is a forwarded message rather than a direct message or reply trail.
+
+    Per RFC 5322 and standard MUA conventions (Outlook, Thunderbird, Gmail, Apple Mail),
+    forwarded emails carry subject prefixes like 'Fwd:' or German 'WG:', or embedded MIME / body
+    delimiters like '---------- Forwarded message ---------'. In contrast to reply chains where
+    quoted trails are typically redundant historical context, forwarded messages carry the
+    primary information payload intended for calendar extraction.
+
+    Args:
+        subject: The email subject line.
+        body: The plain text email body.
+
+    Returns:
+        bool: True if the email represents a forwarded message.
+    """
+    if subject:
+        clean_subj = subject.strip()
+        while clean_subj.startswith('['):
+            idx = clean_subj.find(']')
+            if idx != -1:
+                clean_subj = clean_subj[idx + 1:].strip()
+            else:
+                break
+        if FORWARD_SUBJECT_PREFIX_REGEX.match(clean_subj):
+            return True
+        if REPLY_SUBJECT_PREFIX_REGEX.match(clean_subj):
+            if body and any(p.search(body) for p in FORWARD_BODY_PATTERNS):
+                return True
+            return False
+
+    if body:
+        if any(p.search(body) for p in FORWARD_BODY_PATTERNS):
+            return True
+
+    return False
 
 
 def _parse_iso_datetime(value: str) -> Optional[datetime]:
@@ -86,4 +141,5 @@ __all__ = [
     "generate_email_id",
     "fingerprint_body",
     "normalize_timestamp",
+    "is_forwarded_email",
 ]

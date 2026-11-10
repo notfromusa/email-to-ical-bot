@@ -31,7 +31,7 @@ import logging
 
 import config
 from attachment_parser import AttachmentExtractor
-from identifiers import generate_email_id, fingerprint_body, normalize_timestamp
+from identifiers import generate_email_id, fingerprint_body, normalize_timestamp, is_forwarded_email
 from messaging import build_reply_message_html_from_text, format_invite_subject
 
 
@@ -211,7 +211,7 @@ class ExchangeClient:
                     from html import unescape
                     import re
                     body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
-                body = self._strip_reply_trail(body)
+                body = self._strip_reply_trail(body, subject=item.subject)
                 attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
                 if attachment_text:
                     body = f"{body}\n\n{attachment_text}" if body else attachment_text
@@ -257,16 +257,22 @@ class ExchangeClient:
         
         return emails, has_more
 
-    def _strip_reply_trail(self, body: str) -> str:
-        """Remove quoted previous messages and reply headers for cleaner LLM input."""
+    def _strip_reply_trail(self, body: str, subject: Optional[str] = None) -> str:
+        """Remove quoted previous messages and reply headers for cleaner LLM input.
+
+        Preserves forwarded emails intact so that forwarded events are not discarded.
+        """
         if not body:
             return body
+        if is_forwarded_email(subject=subject, body=body):
+            return body.strip()
+
         markers = [
             '-----original message-----',
             '----- reply message -----',
             '-----ursprüngliche nachricht-----',
         ]
-        header_block_prefixes = ('from:', 'de:', 'gesendet:', 'sent:', 'to:', 'an:', 'subject:', 'betreff:', 'cc:')
+        header_block_prefixes = ('from:', 'de:', 'von:', 'gesendet:', 'sent:', 'to:', 'an:', 'subject:', 'betreff:', 'cc:')
         reply_header_patterns = [
             re.compile(r'^on\s.+wrote:\s*$', re.IGNORECASE),
             re.compile(r'^am\s.+schrieb.+:\s*$', re.IGNORECASE),
@@ -277,19 +283,31 @@ class ExchangeClient:
             if not trimmed:
                 continue
             if trimmed.startswith('>'):
-                return '\n'.join(lines[:idx]).strip()
+                candidate = '\n'.join(lines[:idx]).strip()
+                if candidate:
+                    return candidate
+                continue
             for marker in markers:
                 if trimmed.startswith(marker):
-                    return '\n'.join(lines[:idx]).strip()
+                    candidate = '\n'.join(lines[:idx]).strip()
+                    if candidate:
+                        return candidate
+                    continue
             if any(pattern.match(trimmed) for pattern in reply_header_patterns):
-                return '\n'.join(lines[:idx]).strip()
+                candidate = '\n'.join(lines[:idx]).strip()
+                if candidate:
+                    return candidate
+                continue
             if trimmed.startswith(header_block_prefixes):
                 next_lines = [
                     (lines[idx + offset].strip().lower() if idx + offset < len(lines) else '')
                     for offset in (1, 2, 3)
                 ]
                 if any(next_line.startswith(header_block_prefixes) for next_line in next_lines if next_line):
-                    return '\n'.join(lines[:idx]).strip()
+                    candidate = '\n'.join(lines[:idx]).strip()
+                    if candidate:
+                        return candidate
+                    continue
         return body.strip()
     
     @staticmethod
@@ -733,7 +751,7 @@ class ExchangeClient:
                 from html import unescape
                 import re
                 body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
-            body = self._strip_reply_trail(body)
+            body = self._strip_reply_trail(body, subject=item.subject)
             attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
             if attachment_text:
                 body = f"{body}\n\n{attachment_text}" if body else attachment_text
@@ -793,7 +811,9 @@ class ExchangeClient:
         if message_id:
             try:
                 data = self.fetch_email_by_message_id(message_id)
-                if data and (data.get('id') == email_id or not email_id):
+                clean_target_mid = (message_id or '').strip().strip('<>')
+                fetched_mid = (data.get('message_id') or '').strip().strip('<>') if data else ''
+                if data and (data.get('id') == email_id or not email_id or (clean_target_mid and fetched_mid == clean_target_mid)):
                     return data
             except Exception as exc:
                 logger.warning("Direct message_id fetch failed during fetch_email_by_id: %s", exc)
@@ -812,7 +832,7 @@ class ExchangeClient:
                     from html import unescape
                     import re
                     body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
-                body = self._strip_reply_trail(body)
+                body = self._strip_reply_trail(body, subject=item.subject)
                 attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
                 if attachment_text:
                     body = f"{body}\n\n{attachment_text}" if body else attachment_text
