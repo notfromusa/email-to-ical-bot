@@ -658,12 +658,581 @@
             display: none !important;
         }
 
+        /* View mode toggle */
+        .feed-header-main {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .feed-title-row {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            flex-wrap: wrap;
+        }
+
+        .view-mode-toggle {
+            display: inline-flex;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 999px;
+            padding: 3px;
+            gap: 3px;
+        }
+
+        .view-chip {
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            padding: 0.35rem 0.95rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            transition: all 0.2s ease;
+        }
+
+        .view-chip:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .view-chip.active {
+            background: var(--accent);
+            color: #04140f;
+            font-weight: 600;
+            box-shadow: 0 2px 10px rgba(61, 213, 168, 0.3);
+        }
+
+        /* Calendar Container & Toolbar */
+        .calendar-container {
+            margin-top: 0.5rem;
+        }
+
+        .calendar-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem 1rem;
+            padding: 0.75rem 1.15rem;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 14px;
+            margin-bottom: 1rem;
+        }
+
+        .calendar-nav-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .calendar-heading {
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: var(--text);
+            text-align: center;
+            min-width: 180px;
+        }
+
+        .calendar-toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .calendar-subview-toggle {
+            display: inline-flex;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 999px;
+            padding: 2px;
+            gap: 2px;
+        }
+
+        .subview-chip {
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            padding: 0.3rem 0.85rem;
+            border-radius: 999px;
+            font-size: 0.82rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .subview-chip:hover {
+            color: var(--text);
+        }
+
+        .subview-chip.active {
+            background: var(--panel-muted);
+            color: var(--accent);
+            font-weight: 600;
+            border: 1px solid rgba(61, 213, 168, 0.3);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+        }
+
+        /* Calendar Month View */
+        .calendar-month-grid-wrapper {
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            overflow: hidden;
+            background: rgba(10, 16, 30, 0.5);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
+        }
+
+        .calendar-month-grid {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+        }
+
+        .cal-weekday-header {
+            background: rgba(255, 255, 255, 0.04);
+            padding: 0.65rem 0.5rem;
+            text-align: center;
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .cal-weekday-header:nth-child(7n) {
+            border-right: none;
+        }
+
+        .cal-month-cell {
+            min-height: 110px;
+            max-height: 155px;
+            overflow-y: auto;
+            padding: 0.45rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            background: transparent;
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+            transition: background 0.15s ease;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .cal-month-cell:nth-child(7n) {
+            border-right: none;
+        }
+
+        .cal-month-cell:hover {
+            background: rgba(255, 255, 255, 0.025);
+        }
+
+        .cal-month-cell.is-other-month {
+            opacity: 0.35;
+            background: rgba(0, 0, 0, 0.18);
+        }
+
+        .cal-month-cell.is-today {
+            background: rgba(61, 213, 168, 0.045);
+        }
+
+        .cal-cell-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            margin-bottom: 0.2rem;
+            pointer-events: none;
+        }
+
+        .cal-day-num {
+            font-weight: 600;
+            color: var(--muted);
+            width: 24px;
+            height: 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+
+        .cal-month-cell.is-today .cal-day-num {
+            background: var(--accent);
+            color: #04140f;
+            font-weight: 700;
+        }
+
+        .cal-day-count {
+            font-size: 0.72rem;
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 999px;
+            padding: 0.05rem 0.4rem;
+        }
+
+        .cal-cell-events {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            flex: 1;
+        }
+
+        .cal-event-pill {
+            font-size: 0.78rem;
+            padding: 0.22rem 0.45rem;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border-left: 3px solid var(--accent);
+            color: var(--text);
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
+            line-height: 1.3;
+            transition: transform 0.12s ease, filter 0.15s ease;
+        }
+
+        .cal-event-pill:hover {
+            filter: brightness(1.2);
+            transform: translateX(1px);
+        }
+
+        .cal-event-pill .pill-time {
+            font-weight: 600;
+            opacity: 0.85;
+            margin-right: 0.25rem;
+        }
+
+        .cal-event-pill.pill--sent {
+            border-left-color: var(--accent);
+            background: rgba(61, 213, 168, 0.14);
+            color: #d1fae5;
+        }
+
+        .cal-event-pill.pill--pending {
+            border-left-color: #38bdf8;
+            background: rgba(56, 189, 248, 0.14);
+            color: #e0f2fe;
+        }
+
+        .cal-event-pill.pill--dryrun {
+            border-left-color: #2dd4bf;
+            background: rgba(45, 212, 191, 0.14);
+            color: #ccfbf1;
+        }
+
+        .cal-event-pill.pill--warn,
+        .cal-event-pill.pill--error {
+            border-left-color: var(--accent-strong);
+            background: rgba(255, 140, 50, 0.16);
+            color: #ffedd5;
+        }
+
+        .cal-more-badge {
+            font-size: 0.72rem;
+            color: var(--accent);
+            padding: 0.15rem 0.35rem;
+            cursor: pointer;
+            font-weight: 600;
+            border-radius: 4px;
+            align-self: flex-start;
+        }
+
+        .cal-more-badge:hover {
+            background: rgba(61, 213, 168, 0.12);
+            text-decoration: underline;
+        }
+
+        /* Calendar Week View (Outlook Schedule Grid) */
+        .calendar-week-grid-wrapper {
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            background: rgba(10, 16, 30, 0.5);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
+        }
+
+        .cal-week-header-row {
+            display: grid;
+            grid-template-columns: 56px repeat(7, minmax(0, 1fr));
+            background: rgba(255, 255, 255, 0.04);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+
+        .cal-week-header-time-spacer {
+            border-right: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            color: var(--muted);
+        }
+
+        .cal-week-day-col-header {
+            padding: 0.6rem 0.4rem;
+            text-align: center;
+            border-right: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.2rem;
+            user-select: none;
+        }
+
+        .cal-week-day-col-header:last-child {
+            border-right: none;
+        }
+
+        .cal-week-day-name {
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+
+        .cal-week-day-num {
+            font-size: 1.05rem;
+            font-weight: 600;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text);
+        }
+
+        .cal-week-day-col-header.is-today .cal-week-day-num {
+            background: var(--accent);
+            color: #04140f;
+            font-weight: 700;
+        }
+
+        .cal-week-day-col-header.is-today .cal-week-day-name {
+            color: var(--accent);
+        }
+
+        .cal-week-body-scroll {
+            height: 580px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            position: relative;
+            scroll-behavior: smooth;
+        }
+
+        .cal-week-time-grid {
+            display: grid;
+            grid-template-columns: 56px repeat(7, minmax(0, 1fr));
+            position: relative;
+            height: 1248px; /* 24 hrs * 52px */
+        }
+
+        .cal-week-time-axis {
+            border-right: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(0, 0, 0, 0.12);
+            user-select: none;
+        }
+
+        .cal-week-hour-label {
+            height: 52px;
+            padding-right: 8px;
+            padding-top: 2px;
+            text-align: right;
+            font-size: 0.72rem;
+            color: var(--muted);
+            box-sizing: border-box;
+            font-variant-numeric: tabular-nums;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.025);
+        }
+
+        .cal-week-day-column {
+            position: relative;
+            border-right: 1px solid rgba(255, 255, 255, 0.06);
+            height: 1248px;
+        }
+
+        .cal-week-day-column:last-child {
+            border-right: none;
+        }
+
+        .cal-week-hour-slot {
+            height: 52px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            box-sizing: border-box;
+            position: relative;
+        }
+
+        .cal-week-hour-slot::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 26px;
+            border-bottom: 1px dashed rgba(255, 255, 255, 0.02);
+            pointer-events: none;
+        }
+
+        /* Outlook Meeting Length Block */
+        .cal-week-event-card {
+            position: absolute;
+            border-radius: 6px;
+            padding: 0.35rem 0.5rem;
+            box-sizing: border-box;
+            overflow: hidden;
+            cursor: pointer;
+            z-index: 2;
+            transition: filter 0.15s ease, z-index 0.1s ease, box-shadow 0.15s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            user-select: none;
+        }
+
+        .cal-week-event-card:hover {
+            filter: brightness(1.2);
+            z-index: 10;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+        }
+
+        .cal-week-event-card.event--sent {
+            background: rgba(61, 213, 168, 0.22);
+            border-left: 4px solid var(--accent);
+            color: #ecfdf5;
+        }
+
+        .cal-week-event-card.event--pending {
+            background: rgba(56, 189, 248, 0.22);
+            border-left: 4px solid #38bdf8;
+            color: #f0f9ff;
+        }
+
+        .cal-week-event-card.event--dryrun {
+            background: rgba(45, 212, 191, 0.22);
+            border-left: 4px solid #2dd4bf;
+            color: #f0fdfa;
+        }
+
+        .cal-week-event-card.event--warn,
+        .cal-week-event-card.event--error {
+            background: rgba(255, 140, 50, 0.24);
+            border-left: 4px solid var(--accent-strong);
+            color: #fff7ed;
+        }
+
+        .cal-week-event-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.35rem;
+            line-height: 1.2;
+        }
+
+        .cal-week-event-time {
+            font-size: 0.72rem;
+            font-weight: 600;
+            opacity: 0.95;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .cal-week-event-duration {
+            font-size: 0.68rem;
+            font-weight: 600;
+            background: rgba(0, 0, 0, 0.25);
+            padding: 0.05rem 0.35rem;
+            border-radius: 4px;
+            white-space: nowrap;
+            letter-spacing: 0.02em;
+        }
+
+        .cal-week-event-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            line-height: 1.25;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            word-break: break-word;
+        }
+
+        .cal-week-event-location {
+            font-size: 0.72rem;
+            opacity: 0.82;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: auto;
+        }
+
+        /* Current time line in week view */
+        .cal-current-time-line {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #ef4444;
+            z-index: 4;
+            pointer-events: none;
+        }
+
+        .cal-current-time-line::before {
+            content: '';
+            position: absolute;
+            left: -4px;
+            top: -3px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+        }
+
+        .cal-empty-notice {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--muted);
+            font-size: 0.9rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            background: rgba(255, 255, 255, 0.01);
+        }
+
         @media (max-width: 640px) {
             .hero {
                 padding: 1.25rem;
             }
             .event-card {
                 padding: 1rem;
+            }
+            .calendar-toolbar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .calendar-heading {
+                min-width: auto;
+            }
+            .cal-week-body-scroll {
+                overflow-x: auto;
+            }
+            .cal-week-time-grid, .cal-week-header-row {
+                min-width: 620px;
             }
         }
     </style>
@@ -745,8 +1314,20 @@
 
         <section class="event-feed">
             <div class="feed-header">
-                <div>
-                    <h2>Processing feed</h2>
+                <div class="feed-header-main">
+                    <div class="feed-title-row">
+                        <h2>Processing feed</h2>
+                        <div class="view-mode-toggle" role="tablist" aria-label="View mode">
+                            <button class="view-chip active" id="view-mode-calendar" type="button" role="tab" aria-selected="true" onclick="setViewMode('calendar')">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                                <span>Calendar</span>
+                            </button>
+                            <button class="view-chip" id="view-mode-list" type="button" role="tab" aria-selected="false" onclick="setViewMode('list')">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                                <span>List</span>
+                            </button>
+                        </div>
+                    </div>
                     <div class="filter-group">
                         <button class="filter-chip active" data-filter="all">All</button>
                         <button class="filter-chip" data-filter="events">Events only</button>
@@ -767,7 +1348,33 @@
                     <button class="pill-button warn" type="button" onclick="purgeOldEntries()">Purge 1+ week history</button>
                 </div>
             </div>
-            <div id="events-list" class="event-list"></div>
+
+            <!-- Calendar View Container -->
+            <div id="calendar-view-container" class="calendar-container">
+                <div class="calendar-toolbar">
+                    <div class="calendar-nav-group">
+                        <button class="pill-button" id="cal-prev-btn" type="button" onclick="navigateCalendar(-1)" aria-label="Previous">&lt; Prev</button>
+                        <button class="pill-button" id="cal-today-btn" type="button" onclick="navigateCalendarToday()">Today</button>
+                        <button class="pill-button" id="cal-next-btn" type="button" onclick="navigateCalendar(1)" aria-label="Next">Next &gt;</button>
+                    </div>
+                    <div class="calendar-heading" id="cal-current-label">November 2026</div>
+                    <div class="calendar-toolbar-right">
+                        <div class="calendar-subview-toggle" role="tablist" aria-label="Calendar view type">
+                            <button class="subview-chip active" id="subview-month-btn" type="button" role="tab" aria-selected="true" onclick="setCalendarSubView('month')">Month</button>
+                            <button class="subview-chip" id="subview-week-btn" type="button" role="tab" aria-selected="false" onclick="setCalendarSubView('week')">Week</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Month View Grid -->
+                <div id="calendar-month-view" class="calendar-month-grid-wrapper"></div>
+
+                <!-- Week View Grid (Outlook Schedule) -->
+                <div id="calendar-week-view" class="calendar-week-grid-wrapper" style="display: none;"></div>
+            </div>
+
+            <!-- List View Container (Hidden when Calendar is active) -->
+            <div id="events-list" class="event-list" style="display: none;"></div>
         </section>
 
 
@@ -915,6 +1522,10 @@
         let credentialsConfigured = false;
         let credentialMessageTimer = null;
         let attachmentTogglePending = false;
+        let currentViewMode = localStorage.getItem('ical_dashboard_view_mode') || 'calendar';
+        let currentCalendarSubView = localStorage.getItem('ical_calendar_subview') || 'month';
+        let currentCalendarDate = new Date();
+        let cachedEvents = [];
 
         function formatDate(value) {
             if (!value) return '—';
@@ -1595,26 +2206,579 @@
             `;
         }
 
+        function parseEventDate(value) {
+            if (!value) return null;
+            if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+            const s = String(value).trim();
+            if (!s) return null;
+
+            // Date only (YYYY-MM-DD): default to 09:00 local time
+            const dateOnlyMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (dateOnlyMatch) {
+                return new Date(Number(dateOnlyMatch[1]), Number(dateOnlyMatch[2]) - 1, Number(dateOnlyMatch[3]), 9, 0, 0);
+            }
+
+            // ISO string or space-separated timestamp
+            const isoNormalized = (s.includes(' ') && !s.includes('T')) ? s.replace(' ', 'T') : s;
+            const d = new Date(isoNormalized);
+            if (!isNaN(d.getTime())) return d;
+
+            // ICS format fallback (e.g. 20261115T140000Z)
+            if (typeof parseIcsDateValue === 'function') {
+                const ics = parseIcsDateValue(s);
+                if (ics && !isNaN(ics.getTime())) return ics;
+            }
+            return null;
+        }
+
+        function isSameDay(d1, d2) {
+            if (!d1 || !d2) return false;
+            return d1.getFullYear() === d2.getFullYear() &&
+                   d1.getMonth() === d2.getMonth() &&
+                   d1.getDate() === d2.getDate();
+        }
+
+        function formatShortTime(date) {
+            if (!date) return '';
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        }
+
+        function formatShortDateTime(date) {
+            if (!date) return '';
+            return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + formatShortTime(date);
+        }
+
+        function formatDuration(start, end) {
+            if (!start || !end) return '';
+            const diffMs = end.getTime() - start.getTime();
+            if (diffMs <= 0) return '';
+            const totalMinutes = Math.round(diffMs / (1000 * 60));
+            const hours = Math.floor(totalMinutes / 60);
+            const mins = totalMinutes % 60;
+            if (hours > 0 && mins > 0) return `${hours}h ${mins}m`;
+            if (hours > 0) return `${hours}h`;
+            return `${mins}m`;
+        }
+
+        function getEventStatusClass(ev) {
+            if (ev.status === 'llm_error' || ev.status === 'send_error') return 'pill--warn';
+            if (ev.pending) return 'pill--pending';
+            if (ev.sent) return 'pill--sent';
+            if (ev.dry_run) return 'pill--dryrun';
+            return 'pill--sent';
+        }
+
+        function getWeekEventStatusClass(ev) {
+            if (ev.status === 'llm_error' || ev.status === 'send_error') return 'event--warn';
+            if (ev.pending) return 'event--pending';
+            if (ev.sent) return 'event--sent';
+            if (ev.dry_run) return 'event--dryrun';
+            return 'event--sent';
+        }
+
+        function getCalendarEvents(records) {
+            const calendarEvents = [];
+            if (!Array.isArray(records)) return calendarEvents;
+
+            for (const record of records) {
+                const candidates = Array.isArray(record.event_candidates) && record.event_candidates.length > 0
+                    ? record.event_candidates
+                    : null;
+
+                if (candidates && candidates.length > 0) {
+                    candidates.forEach((cand, idx) => {
+                        const start = parseEventDate(cand.start_datetime);
+                        if (start) {
+                            let end = parseEventDate(cand.end_datetime);
+                            if (!end || end.getTime() <= start.getTime()) {
+                                end = new Date(start.getTime() + 60 * 60 * 1000);
+                            }
+                            calendarEvents.push({
+                                id: `${record.email_id || ''}_cand_${idx}`,
+                                email_id: record.email_id,
+                                title: cand.title || record.event_title || 'Untitled event',
+                                start: start,
+                                end: end,
+                                location: cand.location || record.event_location || '',
+                                description: cand.description || record.event_description || '',
+                                status: record.status,
+                                sent: Boolean(record.sent),
+                                dry_run: Boolean(record.dry_run),
+                                prompt_injection: Boolean(record.prompt_injection),
+                                pending: isPending(record),
+                                candidate_index: idx,
+                                candidate_count: candidates.length,
+                                email_sender: record.email_sender,
+                                email_subject: record.email_subject,
+                                record: record
+                            });
+                        }
+                    });
+                } else if ((record.has_event || record.event_title) && record.event_start) {
+                    const start = parseEventDate(record.event_start);
+                    if (start) {
+                        let end = parseEventDate(record.event_end);
+                        if (!end || end.getTime() <= start.getTime()) {
+                            end = new Date(start.getTime() + 60 * 60 * 1000);
+                        }
+                        calendarEvents.push({
+                            id: `${record.email_id || ''}_main`,
+                            email_id: record.email_id,
+                            title: record.event_title || 'Untitled event',
+                            start: start,
+                            end: end,
+                            location: record.event_location || '',
+                            description: record.event_description || '',
+                            status: record.status,
+                            sent: Boolean(record.sent),
+                            dry_run: Boolean(record.dry_run),
+                            prompt_injection: Boolean(record.prompt_injection),
+                            pending: isPending(record),
+                            candidate_index: 0,
+                            candidate_count: 1,
+                            email_sender: record.email_sender,
+                            email_subject: record.email_subject,
+                            record: record
+                        });
+                    }
+                }
+            }
+            return calendarEvents;
+        }
+
+        function layoutDayEvents(dayEvents, hourHeight) {
+            if (!dayEvents || dayEvents.length === 0) return [];
+
+            const items = dayEvents.map(e => {
+                const startHours = e.start.getHours() + e.start.getMinutes() / 60;
+                let endHours = e.end.getHours() + e.end.getMinutes() / 60;
+                if (endHours <= startHours) {
+                    endHours = Math.min(24, startHours + 1);
+                }
+                const durationHours = Math.max(0.33, endHours - startHours);
+                return {
+                    event: e,
+                    start: startHours,
+                    end: endHours,
+                    duration: durationHours,
+                    top: startHours * hourHeight,
+                    height: Math.max(26, durationHours * hourHeight),
+                    col: 0,
+                    totalCols: 1
+                };
+            });
+
+            items.sort((a, b) => a.start - b.start || b.duration - a.duration);
+
+            const clusters = [];
+            let currentCluster = [];
+            let clusterEnd = -1;
+
+            for (const item of items) {
+                if (currentCluster.length === 0 || item.start < clusterEnd) {
+                    currentCluster.push(item);
+                    clusterEnd = Math.max(clusterEnd, item.end);
+                } else {
+                    clusters.push(currentCluster);
+                    currentCluster = [item];
+                    clusterEnd = item.end;
+                }
+            }
+            if (currentCluster.length > 0) {
+                clusters.push(currentCluster);
+            }
+
+            for (const cluster of clusters) {
+                const columns = [];
+                for (const item of cluster) {
+                    let placed = false;
+                    for (let i = 0; i < columns.length; i++) {
+                        if (columns[i] <= item.start) {
+                            item.col = i;
+                            columns[i] = item.end;
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if (!placed) {
+                        item.col = columns.length;
+                        columns.push(item.end);
+                    }
+                }
+                const totalCols = columns.length;
+                for (const item of cluster) {
+                    item.totalCols = totalCols;
+                }
+            }
+
+            return items;
+        }
+
+        function updateViewModeUI() {
+            const isCal = currentViewMode === 'calendar';
+            const calContainer = document.getElementById('calendar-view-container');
+            const listContainer = document.getElementById('events-list');
+            const calBtn = document.getElementById('view-mode-calendar');
+            const listBtn = document.getElementById('view-mode-list');
+
+            if (calContainer) {
+                calContainer.style.display = isCal ? 'block' : 'none';
+            }
+            if (listContainer) {
+                listContainer.style.display = isCal ? 'none' : 'flex';
+            }
+            if (calBtn) {
+                calBtn.classList.toggle('active', isCal);
+                calBtn.setAttribute('aria-selected', isCal ? 'true' : 'false');
+            }
+            if (listBtn) {
+                listBtn.classList.toggle('active', !isCal);
+                listBtn.setAttribute('aria-selected', !isCal ? 'true' : 'false');
+            }
+        }
+
+        function setViewMode(mode) {
+            currentViewMode = mode;
+            localStorage.setItem('ical_dashboard_view_mode', mode);
+            updateViewModeUI();
+            renderActiveView();
+        }
+
+        function setCalendarSubView(subView) {
+            currentCalendarSubView = subView;
+            localStorage.setItem('ical_calendar_subview', subView);
+            renderCalendarView();
+        }
+
+        function navigateCalendar(delta) {
+            if (currentCalendarSubView === 'month') {
+                currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta);
+            } else {
+                currentCalendarDate.setDate(currentCalendarDate.getDate() + (delta * 7));
+            }
+            renderCalendarView();
+        }
+
+        function navigateCalendarToday() {
+            currentCalendarDate = new Date();
+            renderCalendarView();
+        }
+
+        function switchToWeekForDate(targetDate) {
+            currentCalendarDate = new Date(targetDate);
+            setCalendarSubView('week');
+        }
+
+        function renderActiveView() {
+            updateViewModeUI();
+            if (currentViewMode === 'calendar') {
+                renderCalendarView();
+            } else {
+                renderListView();
+            }
+        }
+
+        function renderListView() {
+            const container = document.getElementById('events-list');
+            if (!container) return;
+            if (!cachedEvents.length) {
+                container.innerHTML = '<div class="empty-state">No records yet for this filter. Trigger a new email to populate the feed.</div>';
+                return;
+            }
+            container.innerHTML = cachedEvents.map(renderEventCard).join('');
+        }
+
+        function renderCalendarView() {
+            const isMonth = currentCalendarSubView === 'month';
+            const monthView = document.getElementById('calendar-month-view');
+            const weekView = document.getElementById('calendar-week-view');
+            const monthBtn = document.getElementById('subview-month-btn');
+            const weekBtn = document.getElementById('subview-week-btn');
+
+            if (monthView) monthView.style.display = isMonth ? 'block' : 'none';
+            if (weekView) weekView.style.display = isMonth ? 'none' : 'flex';
+            if (monthBtn) {
+                monthBtn.classList.toggle('active', isMonth);
+                monthBtn.setAttribute('aria-selected', isMonth ? 'true' : 'false');
+            }
+            if (weekBtn) {
+                weekBtn.classList.toggle('active', !isMonth);
+                weekBtn.setAttribute('aria-selected', !isMonth ? 'true' : 'false');
+            }
+
+            if (isMonth) {
+                renderCalendarMonth();
+            } else {
+                renderCalendarWeek();
+            }
+        }
+
+        function renderCalendarMonth() {
+            const container = document.getElementById('calendar-month-view');
+            if (!container) return;
+
+            const year = currentCalendarDate.getFullYear();
+            const month = currentCalendarDate.getMonth();
+
+            const heading = document.getElementById('cal-current-label');
+            if (heading) {
+                heading.textContent = currentCalendarDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            }
+
+            const events = getCalendarEvents(cachedEvents);
+
+            // Week starts on Monday (ISO standard / Outlook default)
+            const firstDay = new Date(year, month, 1);
+            const startDayOfWeek = (firstDay.getDay() + 6) % 7; // 0=Mon ... 6=Sun
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const totalCells = Math.ceil((startDayOfWeek + daysInMonth) / 7) * 7;
+            const startDate = new Date(year, month, 1 - startDayOfWeek);
+            const today = new Date();
+
+            const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+            let html = '<div class="calendar-month-grid">';
+
+            for (const d of weekdays) {
+                html += `<div class="cal-weekday-header">${d}</div>`;
+            }
+
+            let monthEventsCount = 0;
+
+            for (let i = 0; i < totalCells; i++) {
+                const cellDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
+                const isCurrentMonth = cellDate.getMonth() === month;
+                const isTodayDate = isSameDay(cellDate, today);
+                const cellEvents = events.filter(e => isSameDay(e.start, cellDate));
+                if (isCurrentMonth) {
+                    monthEventsCount += cellEvents.length;
+                }
+                cellEvents.sort((a, b) => a.start - b.start);
+
+                const classes = ['cal-month-cell'];
+                if (!isCurrentMonth) classes.push('is-other-month');
+                if (isTodayDate) classes.push('is-today');
+
+                html += `<div class="${classes.join(' ')}" onclick="switchToWeekForDate(new Date(${cellDate.getTime()}))" title="Click to view week of ${cellDate.toLocaleDateString()}">`;
+                html += `  <div class="cal-cell-header">`;
+                html += `    <span class="cal-day-num">${cellDate.getDate()}</span>`;
+                if (cellEvents.length > 0) {
+                    html += `    <span class="cal-day-count">${cellEvents.length}</span>`;
+                }
+                html += `  </div>`;
+
+                html += `  <div class="cal-cell-events">`;
+                const maxDisplay = 3;
+                const displayed = cellEvents.slice(0, maxDisplay);
+                for (const ev of displayed) {
+                    const timeStr = formatShortTime(ev.start);
+                    const statusClass = getEventStatusClass(ev);
+                    const durationStr = formatDuration(ev.start, ev.end);
+                    const tooltip = `${ev.title} (${durationStr})\n${formatShortDateTime(ev.start)} – ${formatShortDateTime(ev.end)}${ev.location ? '\n📍 ' + ev.location : ''}\nFrom: ${ev.email_sender || '—'}`;
+                    html += `    <div class="cal-event-pill ${statusClass}" title="${escapeHtml(tooltip)}" onclick="event.stopPropagation(); openEventDetails('${escapeHtml(ev.email_id || '')}', ${ev.pending})">`;
+                    html += `      <span class="pill-time">${escapeHtml(timeStr)}</span>`;
+                    html += `      <span class="pill-title">${escapeHtml(ev.title)}</span>`;
+                    html += `    </div>`;
+                }
+                if (cellEvents.length > maxDisplay) {
+                    const overflow = cellEvents.length - maxDisplay;
+                    html += `    <div class="cal-more-badge" onclick="event.stopPropagation(); switchToWeekForDate(new Date(${cellDate.getTime()}))">+${overflow} more (week)</div>`;
+                }
+                html += `  </div>`;
+                html += `</div>`;
+            }
+
+            html += '</div>';
+
+            if (monthEventsCount === 0) {
+                if (currentFilter === 'no_events') {
+                    html += '<div class="cal-empty-notice">No calendar events under "No events" filter. Switch to List view to inspect non-event emails.</div>';
+                } else {
+                    html += '<div class="cal-empty-notice">No scheduled events detected in this month. Use &lt; Prev / Next &gt; to navigate or click "Scan Inbox Now".</div>';
+                }
+            }
+
+            container.innerHTML = html;
+        }
+
+        function renderCalendarWeek() {
+            const container = document.getElementById('calendar-week-view');
+            if (!container) return;
+
+            const dayOfWeek = (currentCalendarDate.getDay() + 6) % 7; // 0=Mon ... 6=Sun
+            const monday = new Date(currentCalendarDate.getFullYear(), currentCalendarDate.getMonth(), currentCalendarDate.getDate() - dayOfWeek, 0, 0, 0, 0);
+            const weekDays = [];
+            for (let i = 0; i < 7; i++) {
+                weekDays.push(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
+            }
+
+            const heading = document.getElementById('cal-current-label');
+            if (heading) {
+                const first = weekDays[0];
+                const last = weekDays[6];
+                const m1 = first.toLocaleDateString('en-US', { month: 'short' });
+                const m2 = last.toLocaleDateString('en-US', { month: 'short' });
+                const y1 = first.getFullYear();
+                const y2 = last.getFullYear();
+                if (y1 !== y2) {
+                    heading.textContent = `${m1} ${first.getDate()}, ${y1} – ${m2} ${last.getDate()}, ${y2}`;
+                } else if (m1 !== m2) {
+                    heading.textContent = `${m1} ${first.getDate()} – ${m2} ${last.getDate()}, ${y1}`;
+                } else {
+                    heading.textContent = `${m1} ${first.getDate()} – ${last.getDate()}, ${y1}`;
+                }
+            }
+
+            const events = getCalendarEvents(cachedEvents);
+            const today = new Date();
+            const weekdaysShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+            const HOUR_HEIGHT = 52; // pixels per hour
+
+            let html = '';
+
+            // Header row: Time spacer + 7 day columns
+            html += '<div class="cal-week-header-row">';
+            html += '  <div class="cal-week-header-time-spacer">Time</div>';
+            for (let i = 0; i < 7; i++) {
+                const dayDate = weekDays[i];
+                const isTodayDate = isSameDay(dayDate, today);
+                html += `  <div class="cal-week-day-col-header ${isTodayDate ? 'is-today' : ''}">`;
+                html += `    <span class="cal-week-day-name">${weekdaysShort[i]}</span>`;
+                html += `    <span class="cal-week-day-num">${dayDate.getDate()}</span>`;
+                html += `  </div>`;
+            }
+            html += '</div>';
+
+            // Scrollable time grid
+            html += '<div class="cal-week-body-scroll" id="cal-week-scroll-container">';
+            html += '  <div class="cal-week-time-grid">';
+
+            // Time axis (00:00 to 23:00)
+            html += '    <div class="cal-week-time-axis">';
+            for (let h = 0; h < 24; h++) {
+                const hourStr = String(h).padStart(2, '0') + ':00';
+                html += `      <div class="cal-week-hour-label">${hourStr}</div>`;
+            }
+            html += '    </div>';
+
+            let earliestEventHour = 8;
+            let hasWeekEvents = false;
+
+            // 7 Day columns
+            for (let i = 0; i < 7; i++) {
+                const dayDate = weekDays[i];
+                const isTodayCol = isSameDay(dayDate, today);
+                const dayEvents = events.filter(e => isSameDay(e.start, dayDate));
+
+                if (dayEvents.length > 0) {
+                    hasWeekEvents = true;
+                    for (const ev of dayEvents) {
+                        const h = ev.start.getHours();
+                        if (h < earliestEventHour) {
+                            earliestEventHour = h;
+                        }
+                    }
+                }
+
+                const layoutItems = layoutDayEvents(dayEvents, HOUR_HEIGHT);
+
+                html += `    <div class="cal-week-day-column">`;
+
+                // 24 Hour slot grid lines
+                for (let h = 0; h < 24; h++) {
+                    html += `      <div class="cal-week-hour-slot"></div>`;
+                }
+
+                // If today is in this column, render current time red line
+                if (isTodayCol) {
+                    const now = new Date();
+                    const nowTop = (now.getHours() + (now.getMinutes() / 60)) * HOUR_HEIGHT;
+                    html += `      <div class="cal-current-time-line" style="top: ${nowTop}px;" title="Current time: ${formatShortTime(now)}"></div>`;
+                }
+
+                // Render event cards with proportional height (meeting length)
+                for (const item of layoutItems) {
+                    const ev = item.event;
+                    const statusClass = getWeekEventStatusClass(ev);
+                    const timeRange = `${formatShortTime(ev.start)} – ${formatShortTime(ev.end)}`;
+                    const durationText = formatDuration(ev.start, ev.end);
+                    const widthPct = (100 / item.totalCols);
+                    const leftPct = (item.col * widthPct);
+                    const tooltip = `${ev.title} (${durationText})\n${timeRange}\n${ev.location ? '📍 ' + ev.location + '\n' : ''}From: ${ev.email_sender || '—'}`;
+
+                    html += `      <div class="cal-week-event-card ${statusClass}" `;
+                    html += `           style="top: ${item.top}px; height: ${item.height}px; width: calc(${widthPct}% - 4px); left: calc(${leftPct}% + 2px);" `;
+                    html += `           title="${escapeHtml(tooltip)}" `;
+                    html += `           onclick="event.stopPropagation(); openEventDetails('${escapeHtml(ev.email_id || '')}', ${ev.pending})">`;
+                    html += `        <div class="cal-week-event-header">`;
+                    html += `          <span class="cal-week-event-time">${escapeHtml(timeRange)}</span>`;
+                    if (durationText) {
+                        html += `          <span class="cal-week-event-duration">${escapeHtml(durationText)}</span>`;
+                    }
+                    html += `        </div>`;
+                    html += `        <div class="cal-week-event-title">${escapeHtml(ev.title)}</div>`;
+                    if (ev.location && item.height >= 48) {
+                        html += `        <div class="cal-week-event-location">📍 ${escapeHtml(ev.location)}</div>`;
+                    }
+                    html += `      </div>`;
+                }
+
+                html += `    </div>`;
+            }
+
+            html += '  </div>'; // .cal-week-time-grid
+            html += '</div>'; // .cal-week-body-scroll
+
+            if (!hasWeekEvents) {
+                if (currentFilter === 'no_events') {
+                    html += '<div class="cal-empty-notice">No calendar events under "No events" filter. Switch to List view to inspect non-event emails.</div>';
+                } else {
+                    html += '<div class="cal-empty-notice">No meetings scheduled for this week. Use &lt; Prev / Next &gt; to navigate weeks.</div>';
+                }
+            }
+
+            container.innerHTML = html;
+
+            // Auto-scroll to earliest meeting or 08:00
+            setTimeout(() => {
+                const scrollEl = document.getElementById('cal-week-scroll-container');
+                if (scrollEl) {
+                    const targetHour = Math.max(0, earliestEventHour - 1);
+                    scrollEl.scrollTop = targetHour * HOUR_HEIGHT;
+                }
+            }, 10);
+        }
+
         function loadEvents() {
             if (!credentialsConfigured) {
                 const container = document.getElementById('events-list');
                 if (container) {
                     container.innerHTML = '<div class="empty-state">Mailbox credentials are required before loading history.</div>';
                 }
+                const calMonth = document.getElementById('calendar-month-view');
+                if (calMonth) {
+                    calMonth.innerHTML = '<div class="empty-state">Mailbox credentials are required before loading calendar.</div>';
+                }
+                const calWeek = document.getElementById('calendar-week-view');
+                if (calWeek) {
+                    calWeek.innerHTML = '<div class="empty-state">Mailbox credentials are required before loading calendar.</div>';
+                }
                 return;
             }
             fetch(`/api/events?filter=${currentFilter}`)
                 .then(r => r.json())
                 .then(events => {
-                    const container = document.getElementById('events-list');
-                    if (!events.length) {
-                        container.innerHTML = '<div class="empty-state">No records yet for this filter. Trigger a new email to populate the feed.</div>';
-                        return;
-                    }
-                    container.innerHTML = events.map(renderEventCard).join('');
+                    cachedEvents = Array.isArray(events) ? events : [];
+                    renderActiveView();
                 })
                 .catch(() => {
-                    document.getElementById('events-list').innerHTML = '<div class="empty-state">Failed to load events.</div>';
+                    const container = document.getElementById('events-list');
+                    if (container) {
+                        container.innerHTML = '<div class="empty-state">Failed to load events.</div>';
+                    }
+                    const calMonth = document.getElementById('calendar-month-view');
+                    if (calMonth) {
+                        calMonth.innerHTML = '<div class="empty-state">Failed to load calendar events.</div>';
+                    }
                 });
         }
 
@@ -2373,6 +3537,7 @@
         }
 
         function bootstrap() {
+            updateViewModeUI();
             loadConfig();
             loadCredentialStatus();
             if (credentialsConfigured) {
