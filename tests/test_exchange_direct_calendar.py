@@ -349,3 +349,101 @@ def test_exchange_fallback_to_mime_when_direct_calendar_disabled():
     assert result["status"] == "dry_run_preview"
     assert result.get("direct_calendar_item") is not True
     assert result["subject"] == "Colloquium (iCal-Bot)"
+
+
+def test_build_calendar_description_includes_digest_and_disclaimer():
+    """Verify that build_calendar_description creates digest and automated provenance disclaimer."""
+    from messaging import build_calendar_description
+
+    event_data = {
+        "title": "Faculty Colloquium",
+        "start_datetime": "2026-11-20T14:00:00+01:00",
+        "end_datetime": "2026-11-20T15:00:00+01:00",
+        "location": "Room 2.102",
+        "description": "Discussion on recent computer vision research.",
+    }
+
+    desc = build_calendar_description(event_data)
+    assert "Event: Faculty Colloquium" in desc
+    assert "Start: 2026-11-20T14:00:00+01:00" in desc
+    assert "End: 2026-11-20T15:00:00+01:00" in desc
+    assert "Location: Room 2.102" in desc
+    assert "Description:\nDiscussion on recent computer vision research." in desc
+    assert "Disclaimer: This event was generated automatically by iCal Bot" in desc
+    assert "Please verify the details before accepting." in desc
+
+
+def test_calendar_generator_ics_includes_digest_and_disclaimer():
+    """Verify that create_ics_invite includes the meeting digest and disclaimer in the DESCRIPTION field."""
+    generator = CalendarGenerator()
+    event_data = {
+        "title": "Institute Seminar",
+        "start_datetime": "2026-11-25T10:00:00Z",
+        "end_datetime": "2026-11-25T11:00:00Z",
+        "location": "Auditorium",
+        "description": "Guest lecture on robotics.",
+    }
+
+    ics = generator.create_ics_invite(event_data, recipients=["attendee@example.com"])
+    extracted_desc = ExchangeClient._extract_field_from_ics(ics, "DESCRIPTION")
+    assert extracted_desc is not None
+    assert "Event: Institute Seminar" in extracted_desc
+    assert "Start: 2026-11-25T10:00:00Z" in extracted_desc
+    assert "End: 2026-11-25T11:00:00Z" in extracted_desc
+    assert "Location: Auditorium" in extracted_desc
+    assert "Description:\nGuest lecture on robotics." in extracted_desc
+    assert "Disclaimer: This event was generated automatically by iCal Bot" in extracted_desc
+
+
+def test_exchange_direct_calendar_creates_item_with_digest_and_disclaimer():
+    """Verify that CalendarItem created via ExchangeClient has the digest and disclaimer in item.body."""
+    client = ExchangeClient.__new__(ExchangeClient)
+    client.email_address = "user@ifp.uni-stuttgart.de"
+    client._filter_allowed_recipients = lambda recs: recs
+
+    mock_account = MagicMock(spec=Account)
+    mock_calendar_folder = MagicMock(spec=Calendar)
+    mock_calendar_folder.account = mock_account
+    mock_account.calendar = mock_calendar_folder
+    client.account = mock_account
+
+    def mock_save(*args, **kwargs):
+        pass
+
+    with patch("exchange_client.CalendarItem") as MockCalendarItem:
+        instance = MagicMock()
+        instance.save.side_effect = mock_save
+        MockCalendarItem.return_value = instance
+
+        email_data = {
+            "id": "email-digest-test",
+            "subject": "PhD Seminar",
+            "sender": "prof@uni-stuttgart.de",
+            "recipients": ["user@ifp.uni-stuttgart.de"],
+        }
+        event_data = {
+            "title": "PhD Seminar",
+            "start_datetime": "2026-11-20T14:00:00Z",
+            "end_datetime": "2026-11-20T15:00:00Z",
+            "location": "Room 4.101",
+            "description": "Presentation of thesis outline.",
+        }
+
+        result = client.send_reply_with_calendar(
+            email_data,
+            "",
+            dry_run=False,
+            event_data=event_data,
+        )
+
+        assert result["status"] == "sent"
+        assert MockCalendarItem.called
+        kwargs = MockCalendarItem.call_args[1]
+        body = kwargs.get("body", "")
+        assert "Event: PhD Seminar" in body
+        assert "Start: 2026-11-20T14:00:00Z" in body
+        assert "End: 2026-11-20T15:00:00Z" in body
+        assert "Location: Room 4.101" in body
+        assert "Description:\nPresentation of thesis outline." in body
+        assert "Disclaimer: This event was generated automatically by iCal Bot" in body
+

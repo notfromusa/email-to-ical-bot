@@ -161,6 +161,64 @@ class TestRescanPromptingAndDoublePass:
         assert "Rescan Verification Directive" in prompt
         assert "Check forwarded section" in prompt
 
+    def test_masters_thesis_presentation_prompt_directive(self):
+        """Verify extraction prompt explicitly instructs 30-minute duration for master's thesis presentations."""
+        client = LLMClient()
+        prompt = client._create_event_extraction_prompt(
+            email_body="Announcement of master's thesis presentation.",
+            email_subject="Master Thesis Presentation",
+            reference_timestamp="2026-11-06T10:00:00Z",
+        )
+        assert "master's thesis presentations take 30 minutes and not one hour" in prompt
+
+    def test_masters_thesis_presentation_verification_prompt_directive(self):
+        """Verify verification prompt includes note about 30-minute duration for master's thesis presentations."""
+        client = LLMClient()
+        prompt = client._create_verification_prompt(
+            email_body="Announcement of master's thesis presentation.",
+            email_subject="Master Thesis Presentation",
+            initial_event_data={"has_event": True, "events": []},
+            reference_timestamp="2026-11-06T10:00:00Z",
+        )
+        assert "master's thesis presentations take 30 minutes and not one hour" in prompt
+
+    def test_masters_thesis_presentation_duration_normalization(self):
+        """Ensure candidate without explicit end time defaults to 30 min for master thesis and 60 min for normal events."""
+        client = LLMClient()
+
+        # Master thesis candidate without end_datetime
+        thesis_candidate = {
+            "title": "Master's Thesis Presentation: Semantic Segmentation",
+            "description": "Presentation of Master thesis results",
+            "start_datetime": "2026-11-20T14:00:00+01:00",
+        }
+        normalized_thesis = client._normalize_event_candidate(thesis_candidate)
+        assert normalized_thesis is not None
+        assert normalized_thesis["start_datetime"] == "2026-11-20T14:00:00+01:00"
+        assert normalized_thesis["end_datetime"] == "2026-11-20T14:30:00+01:00"
+
+        # German master thesis presentation without end_datetime
+        german_candidate = {
+            "title": "Masterarbeitsvortrag von Max Mustermann",
+            "description": "Vortrag zur Masterarbeit",
+            "start_datetime": "2026-11-20T10:00:00+01:00",
+        }
+        normalized_german = client._normalize_event_candidate(german_candidate)
+        assert normalized_german is not None
+        assert normalized_german["start_datetime"] == "2026-11-20T10:00:00+01:00"
+        assert normalized_german["end_datetime"] == "2026-11-20T10:30:00+01:00"
+
+        # Standard meeting candidate defaults to 60 min
+        meeting_candidate = {
+            "title": "Team Weekly Sync",
+            "description": "Discuss project sprint",
+            "start_datetime": "2026-11-20T14:00:00+01:00",
+        }
+        normalized_meeting = client._normalize_event_candidate(meeting_candidate)
+        assert normalized_meeting is not None
+        assert normalized_meeting["start_datetime"] == "2026-11-20T14:00:00+01:00"
+        assert normalized_meeting["end_datetime"] == "2026-11-20T15:00:00+01:00"
+
     def test_double_check_no_event_does_not_raise_unparseable_error(self):
         """Pass 2 double-check concluding has_event: false must return (None, metadata) without raising LLMError."""
         client = LLMClient()

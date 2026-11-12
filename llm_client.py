@@ -241,6 +241,9 @@ class LLMClient:
         """
         Create pass-2 double-check verification prompt comparing initial extraction
         to the untrusted email body.
+
+        Instructs the verifier to audit event details, timing (including 30-minute
+        duration for master's thesis presentations), and missing descriptions.
         """
         ref_dt = self._resolve_reference_datetime(reference_timestamp)
         reference_iso = ref_dt.isoformat()
@@ -288,7 +291,7 @@ Initial Extraction:
 
 Verification Instructions:
 1. Verify if any calendar event was missed entirely in the initial extraction.
-2. Check if the start and end dates/times match what is specified or implied in the email.
+2. Check if the start and end dates/times match what is specified or implied in the email (note: master's thesis presentations take 30 minutes and not one hour if end time is unspecified).
 3. Ensure the description captures meaningful context, agenda, room/link details, and participants.
 4. If corrections are needed, output the complete corrected JSON object.
 5. If the initial extraction was accurate, output it as is.
@@ -382,7 +385,12 @@ Respond with ONLY the JSON object, nothing else:"""
         is_rescan: bool = False,
         rescan_hint: Optional[str] = None,
     ) -> str:
-        """Create a prompt for the LLM to extract event information"""
+        """
+        Create a prompt for the LLM to extract event information.
+
+        Includes rules for relative date resolution, missing time defaults, and
+        the rule that master's thesis presentations take 30 minutes and not one hour.
+        """
         reference_dt = self._resolve_reference_datetime(reference_timestamp)
         reference_iso = reference_dt.isoformat(timespec='seconds')
         reference_date = reference_dt.date().isoformat()
@@ -445,8 +453,8 @@ Important:
 - Include ALL concrete event candidates with explicit/implicit time references, up to {self.max_events_per_email} events.
 - In the description, capture meaningful context, agenda points, relevant links, prerequisites, and key details from the email rather than a brief one-line summary.
 - For relative dates (e.g., "tomorrow", "next Monday", "übermorgen"), resolve against reference date {reference_date}.
-- If a date is given without a time, assume 14:00 as start and 15:00 as end.
-- If end time is missing, assume 1 hour duration.
+- If a date is given without a time, assume 14:00 as start and 15:00 as end (or 14:30 for master's thesis presentations).
+- If end time is missing, assume 1 hour duration (master's thesis presentations take 30 minutes and not one hour).
 - Use ISO 8601 datetimes. Include timezone offset when known.
 - Avoid duplicate events.
 - Do not include any explanation text outside JSON.
@@ -695,10 +703,51 @@ Respond with ONLY the JSON object, nothing else:"""
             return ''
         return str(value).strip()
 
+    @staticmethod
+    def _is_masters_thesis_presentation(text: str) -> bool:
+        """
+        Determine whether text describes a master's thesis presentation or defense.
+
+        Matches common academic conventions in German and English, such as
+        "Master thesis presentation", "Masterarbeit Präsentation", "Masterarbeitsvortrag",
+        or "Master thesis defense".
+        """
+        t = text.lower()
+        direct_terms = [
+            "master's thesis presentation",
+            "master thesis presentation",
+            "master thesis defense",
+            "master's thesis defense",
+            "masterarbeit präsentation",
+            "masterarbeit-präsentation",
+            "masterarbeitspräsentation",
+            "masterarbeit vortrag",
+            "masterarbeitsvortrag",
+            "master-abschlussvortrag",
+            "masterabschlussvortrag",
+        ]
+        if any(term in t for term in direct_terms):
+            return True
+        has_master = any(w in t for w in ["master thesis", "master's thesis", "masterarbeit", "master-arbeit", "master"])
+        has_pres = any(w in t for w in ["presentation", "präsentation", "defense", "verteidigung", "vortrag", "kolloquium"])
+        if has_master and has_pres and ("thesis" in t or "arbeit" in t):
+            return True
+        return False
+
     def _extract_duration_minutes(self, candidate: Dict[str, Any]) -> int:
+        """
+        Extract duration in minutes from candidate fields or infer sensible default.
+
+        Returns 30 minutes for master's thesis presentations when explicit duration is
+        omitted, otherwise defaults to 60 minutes.
+        """
         duration_keys = ['duration_minutes', 'duration_min', 'duration', 'duration_hours', 'hours']
         raw = self._first_present_value(candidate, duration_keys)
         if raw is None:
+            title = self._clean_string(self._first_present_value(candidate, ['title', 'event_title', 'summary', 'name']))
+            desc = self._clean_string(self._first_present_value(candidate, ['description', 'details', 'body', 'event_description']))
+            if self._is_masters_thesis_presentation(f"{title} {desc}"):
+                return 30
             return 60
         if isinstance(raw, (int, float)):
             if str(raw).lower().endswith('.0'):
@@ -708,6 +757,10 @@ Respond with ONLY the JSON object, nothing else:"""
             return int(raw * 60) if raw <= 12 else int(raw)
         text = str(raw).strip().lower()
         if not text:
+            title = self._clean_string(self._first_present_value(candidate, ['title', 'event_title', 'summary', 'name']))
+            desc = self._clean_string(self._first_present_value(candidate, ['description', 'details', 'body', 'event_description']))
+            if self._is_masters_thesis_presentation(f"{title} {desc}"):
+                return 30
             return 60
         hour_match = re.search(r'(\d+(?:[\.,]\d+)?)\s*(h|hour|hours|std)', text)
         if hour_match:

@@ -13,6 +13,7 @@ except Exception:
     ZoneInfo = None
 
 import config
+from messaging import build_calendar_description
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ class CalendarGenerator:
                 f"DTSTART:{start_str}",
                 f"DTEND:{end_str}",
                 f"SUMMARY:{self._escape_text(event_data['title'])}",
-                f"DESCRIPTION:{self._escape_text(event_data.get('description', ''))}",
+                f"DESCRIPTION:{self._escape_text(build_calendar_description(event_data))}",
             ]
             
             # Add location if provided

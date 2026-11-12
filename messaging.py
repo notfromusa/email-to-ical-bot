@@ -113,3 +113,59 @@ def build_reply_message_html_from_text(text: str) -> str:
     )
     html_body = "<br>".join(escaped.split("\n"))
     return f"<div style=\"font-family: Arial, sans-serif; white-space: normal;\">{html_body}</div>"
+
+
+def build_calendar_description(event_data: dict) -> str:
+    """Compose the structured body/description for calendar invites and Exchange items.
+
+    Includes a concise digest of key meeting details (Event title, Start, End,
+    Location), followed by the email description/agenda, and concludes with the
+    automated provenance disclaimer.
+
+    Args:
+        event_data: Dictionary containing event attributes ('title', 'start_datetime',
+            'end_datetime', 'location', 'description').
+
+    Returns:
+        Formatted multi-line description string for calendar events.
+    """
+    title = (event_data.get('title') or event_data.get('summary') or '').strip()
+    start = (event_data.get('start_datetime') or event_data.get('start') or '').strip()
+    end = (event_data.get('end_datetime') or event_data.get('end') or '').strip()
+    location = (event_data.get('location') or '').strip()
+    description = (event_data.get('description') or event_data.get('details') or '').strip()
+    bot_email = getattr(config, 'EMAIL_ADDRESS', '')
+
+    # If the description already contains our formatted digest and disclaimer, avoid duplicate wrapping
+    if description.startswith("Event: ") and "Description:" in description and "generated automatically by ical bot" in description.lower():
+        return description
+
+    lines = []
+    if title:
+        lines.append(f"Event: {title}")
+    if start:
+        lines.append(f"Start: {start}")
+    if end:
+        lines.append(f"End: {end}")
+    if location:
+        lines.append(f"Location: {location}")
+
+    if description:
+        if lines:
+            lines.append("")
+        lines.append("Description:")
+        lines.append(description)
+
+    disclaimer_email = f" ({bot_email})" if bot_email else ""
+    disclaimer = (
+        f"Disclaimer: This event was generated automatically by iCal Bot{disclaimer_email}.\n"
+        "Please verify the details before accepting."
+    )
+
+    if "generated automatically by ical bot" not in description.lower():
+        if lines:
+            lines.append("")
+        lines.append(disclaimer)
+
+    return "\n".join(lines)
+
