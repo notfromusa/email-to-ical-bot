@@ -4,6 +4,7 @@ Email client for reading and sending emails
 
 import imaplib
 import smtplib
+import ssl
 import email
 import re
 from pathlib import Path
@@ -35,10 +36,21 @@ class EmailClient:
         self.smtp_port = config.SMTP_PORT
         self.attachment_extractor = AttachmentExtractor()
         
+    @staticmethod
+    def _create_ssl_context() -> ssl.SSLContext:
+        """Create a TLS context with certificate verification, hostname checking, and TLS 1.2+."""
+        ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        return ctx
+
     def connect_imap(self):
-        """Connect to IMAP server"""
+        """Connect to IMAP server with verified TLS."""
         try:
-            mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+            mail = imaplib.IMAP4_SSL(
+                self.imap_server,
+                self.imap_port,
+                ssl_context=self._create_ssl_context(),
+            )
             mail.login(self.email_address, self.email_password)
             logger.info("Successfully connected to IMAP server")
             return mail
@@ -70,6 +82,7 @@ class EmailClient:
         """
         emails = []
         has_more = False
+        mail = None
         try:
             mail = self.connect_imap()
             mail.select('INBOX')
@@ -138,12 +151,19 @@ class EmailClient:
                         
                         logger.info(f"Fetched email: {subject} from {sender}")
             
-            mail.close()
-            mail.logout()
-            
         except Exception as e:
             logger.error(f"Error fetching emails: {e}")
             raise
+        finally:
+            if mail is not None:
+                try:
+                    mail.close()
+                except Exception:
+                    pass
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
         
         return emails, has_more
     
@@ -314,8 +334,10 @@ class EmailClient:
             
             # Add threading headers to keep it in the same conversation
             if original_email.get('message_id'):
-                msg['In-Reply-To'] = original_email['message_id']
-                msg['References'] = original_email['message_id']
+                clean_mid = re.sub(r'[\r\n\x00]+', '', str(original_email['message_id'])).strip()
+                if clean_mid:
+                    msg['In-Reply-To'] = clean_mid
+                    msg['References'] = clean_mid
             
             # Multipart/alternative keeps text, HTML, and calendar inline so Outlook can surface buttons
             alt = MIMEMultipart('alternative')
@@ -371,12 +393,13 @@ class EmailClient:
                 except Exception as exc:
                     logger.warning("Failed to save outbound MIME: %s", exc)
 
-            # Send email (handle implicit SSL vs STARTTLS)
+            # Send email (handle implicit SSL vs STARTTLS) with verified TLS
+            ssl_ctx = self._create_ssl_context()
             if self.smtp_port == 465:
-                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
+                server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=ssl_ctx)
             else:
                 server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-                server.starttls()
+                server.starttls(context=ssl_ctx)
             server.login(self.email_address, self.email_password)
             server.send_message(msg)
             server.quit()
@@ -409,17 +432,62 @@ class EmailClient:
                 recipients.append(sender_addr)
         return recipients
 
+    _EMAIL_ADDRESS_RE = re.compile(r"^[^@\s\x00-\x1f\x7f]+@[^@\s\x00-\x1f\x7f]+\.[^@\s\x00-\x1f\x7f]+$")
+
     def _filter_allowed_recipients(self, recipients: List[str]) -> List[str]:
+        """Validate recipient email addresses and optionally enforce internal domain policy.
+
+        Args:
+            recipients: Raw recipient strings or address headers.
+
+        Returns:
+            Deduplicated list of syntactically valid, permitted email addresses.
+        """
         if not recipients:
             return []
+        enforce_domain = bool(getattr(config, 'ENFORCE_INTERNAL_RECIPIENT_DOMAIN', False))
+        internal_domain = (getattr(config, 'INTERNAL_EMAIL_DOMAIN', '') or '').strip().lower()
+        self_addr = (self.email_address or '').strip().lower()
+
         allowed = []
         for addr in recipients:
-            parsed = parseaddr(addr)[1]
-            if not parsed:
+            if not isinstance(addr, str) or any(ch in addr for ch in ('\r', '\n', '\x00')):
                 continue
+            parsed = parseaddr(addr)[1].strip()
+            if not parsed or not self._EMAIL_ADDRESS_RE.fullmatch(parsed):
+                continue
+            if enforce_domain and internal_domain and internal_domain != 'example.com':
+                lowered = parsed.lower()
+                if lowered != self_addr:
+                    dom = lowered.split('@', 1)[1]
+                    if dom != internal_domain and not dom.endswith(f'.{internal_domain}'):
+                        logger.warning("Blocked external recipient %s due to ENFORCE_INTERNAL_RECIPIENT_DOMAIN", parsed)
+                        continue
             if parsed not in allowed:
                 allowed.append(parsed)
         return allowed
+
+    @staticmethod
+    def _escape_imap_quoted(value: str) -> str:
+        """Validate and escape a string for safe inclusion inside an RFC 3501 IMAP quoted-string.
+
+        Rejects strings exceeding 512 characters or containing characters outside
+        printable ASCII (0x20..0x7E) to prevent IMAP command injection.
+
+        Args:
+            value: Raw search string (e.g., Message-ID).
+
+        Returns:
+            Escaped string safe to wrap in double quotes for IMAP SEARCH.
+
+        Raises:
+            ValueError: If the input contains control/non-printable characters or exceeds max length.
+        """
+        if not value or len(value) > 512:
+            raise ValueError("IMAP quoted string empty or exceeds 512 characters")
+        if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in value):
+            raise ValueError("IMAP quoted string contains disallowed control or non-ASCII characters")
+        return value.replace("\\", "\\\\").replace('"', '\\"')
 
     def fetch_email_by_message_id(self, message_id: str) -> Optional[Dict]:
         """
@@ -433,15 +501,22 @@ class EmailClient:
         """
         if not message_id:
             return None
+        clean_id = message_id.strip()
+        try:
+            self._escape_imap_quoted(clean_id)
+        except ValueError as exc:
+            logger.warning("Rejected unsafe Message-ID for IMAP lookup: %s", exc)
+            return None
+
+        mail = None
         try:
             mail = self.connect_imap()
             mail.select('INBOX')
-            clean_id = message_id.strip()
-            candidates_to_try = [f'"{clean_id}"']
+            candidates_to_try = [f'"{self._escape_imap_quoted(clean_id)}"']
             if clean_id.startswith('<') and clean_id.endswith('>'):
-                candidates_to_try.append(f'"{clean_id[1:-1]}"')
+                candidates_to_try.append(f'"{self._escape_imap_quoted(clean_id[1:-1])}"')
             else:
-                candidates_to_try.append(f'"<{clean_id}>"')
+                candidates_to_try.append(f'"{self._escape_imap_quoted(f"<{clean_id}>")}"')
 
             matching_nums = []
             for query_val in candidates_to_try:
@@ -496,6 +571,16 @@ class EmailClient:
         except Exception as e:
             logger.error("Error fetching email by Message-ID %s: %s", message_id, e)
             return None
+        finally:
+            if mail is not None:
+                try:
+                    mail.close()
+                except Exception:
+                    pass
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
 
     def fetch_email_by_id(
         self,

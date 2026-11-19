@@ -9,7 +9,10 @@ import re
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
-from xml.etree import ElementTree as ET
+try:
+    from defusedxml import ElementTree as ET
+except ImportError:
+    from xml.etree import ElementTree as ET
 
 import config
 
@@ -51,6 +54,11 @@ class AttachmentExtractor:
     @staticmethod
     def _max_pdf_pages() -> int:
         return max(1, int(getattr(config, 'ATTACHMENT_MAX_PDF_PAGES', 20)))
+
+    @staticmethod
+    def _max_uncompressed_bytes() -> int:
+        """Return maximum uncompressed XML byte size permitted when reading DOCX archives."""
+        return max(1, int(getattr(config, 'ATTACHMENT_MAX_UNCOMPRESSED_BYTES', 10_485_760)))
 
     @staticmethod
     def _normalize_text(text: str, limit: int) -> Optional[str]:
@@ -105,16 +113,33 @@ class AttachmentExtractor:
         return self._normalize_text('\n\n'.join(chunks), self._max_text_chars())
 
     def _extract_docx_text(self, data: bytes) -> Optional[str]:
+        """Extract plain text paragraphs from a DOCX archive with zip-bomb and XXE defenses."""
+        max_uncompressed = self._max_uncompressed_bytes()
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                xml_content = archive.read('word/document.xml')
+                info = archive.getinfo('word/document.xml')
+                if info.file_size > max_uncompressed:
+                    logger.warning(
+                        "Skipping DOCX document.xml because uncompressed size %s > %s",
+                        info.file_size,
+                        max_uncompressed,
+                    )
+                    return None
+                with archive.open(info, 'r') as fh:
+                    xml_content = fh.read(max_uncompressed + 1)
+                if len(xml_content) > max_uncompressed:
+                    logger.warning(
+                        "Skipping DOCX document.xml because decompressed stream exceeded %s bytes",
+                        max_uncompressed,
+                    )
+                    return None
         except Exception as exc:
             logger.warning("Failed to read DOCX attachment: %s", exc)
             return None
 
         try:
             root = ET.fromstring(xml_content)
-        except ET.ParseError as exc:
+        except Exception as exc:
             logger.warning("Failed to parse DOCX XML: %s", exc)
             return None
 
@@ -224,6 +249,15 @@ class AttachmentExtractor:
 
             filename = (getattr(attachment, 'name', None) or 'attachment').strip() or 'attachment'
             content_type = getattr(attachment, 'content_type', '') or ''
+            reported_size = getattr(attachment, 'size', None)
+            if isinstance(reported_size, int) and reported_size > self._max_file_size():
+                logger.info(
+                    "Skipping Exchange attachment %s because reported size %s > %s",
+                    filename,
+                    reported_size,
+                    self._max_file_size(),
+                )
+                continue
 
             data = getattr(attachment, 'content', None)
             if data is None:

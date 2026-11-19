@@ -24,6 +24,7 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Set
+from urllib.parse import urlparse
 
 import requests
 
@@ -65,6 +66,7 @@ DEFAULT_WHITELISTED_PROCS = [
     "unsloth-studio",
     "ciscocollabhost",
     "xdg-desktop-portal-gnome",
+    "gnome-remote-desktop",
     "nextcloud",
     "obsidian",
 ]
@@ -264,7 +266,10 @@ class WorkloadMonitor:
         return None
 
     def detect_colleague_gpu_utilization(self) -> Optional[str]:
-        """Detect non-Ollama workload driving high GPU utilization.
+        """Detect non-Ollama, non-whitelisted workload driving high GPU utilization.
+
+        Ignores transient utilization spikes when only whitelisted baseline desktop,
+        browser, or remote-desktop processes are present on the GPU.
 
         Returns:
             Optional[str]: Description of high GPU utilization, or None if clear.
@@ -297,7 +302,7 @@ class WorkloadMonitor:
             if self._llm_active:
                 return None
 
-            # High utilization detected; verify whether it is solely Ollama
+            # High utilization detected; verify whether an external (non-whitelisted, non-Ollama) process is running
             compute_cmd = [
                 "nvidia-smi",
                 "--query-compute-apps=pid,process_name",
@@ -311,24 +316,38 @@ class WorkloadMonitor:
                 check=False,
             )
             ollama_active = False
+            external_procs: List[str] = []
 
             if comp_res.returncode == 0 and comp_res.stdout.strip():
                 for line in comp_res.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
                         continue
-                    p_name = parts[1]
+                    pid, p_name = parts[0], parts[1]
                     if self.is_ollama_process(p_name):
                         ollama_active = True
                         break
+                    if not self.is_whitelisted(p_name):
+                        base = os.path.basename(p_name) or p_name
+                        external_procs.append(f"{base} (PID={pid})")
 
             # If Ollama is active on the GPU, high utilization is our own workload
             if ollama_active:
                 return None
 
+            # If only whitelisted baseline processes (or no compute apps) are active,
+            # do not yield to transient desktop/compositor/remote-desktop spikes
+            if not external_procs:
+                logger.debug(
+                    "GPU utilization at %d%% (>= %d%%) with only whitelisted/baseline processes; ignoring",
+                    util,
+                    self.gpu_util_threshold,
+                )
+                return None
+
             return (
                 f"GPU utilization at {util}% (threshold: {self.gpu_util_threshold}%) "
-                f"driven by external workload"
+                f"driven by external workload: {', '.join(external_procs[:3])}"
             )
 
         except Exception as exc:
@@ -415,6 +434,25 @@ class WorkloadMonitor:
 
         return None
 
+    @staticmethod
+    def _validate_llm_endpoint(endpoint: str) -> None:
+        """Ensure non-local LLM endpoints use HTTPS when ``REQUIRE_HTTPS_FOR_LLM`` is enabled.
+
+        Args:
+            endpoint: Target Ollama/LLM URL.
+
+        Raises:
+            ValueError: If a non-local URL does not use HTTPS while ``REQUIRE_HTTPS_FOR_LLM`` is True.
+        """
+        if not getattr(config, "REQUIRE_HTTPS_FOR_LLM", True):
+            return
+        parsed = urlparse(endpoint)
+        host = parsed.hostname or ""
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            return
+        if parsed.scheme != "https":
+            raise ValueError("LLM endpoint must use HTTPS for non-local hosts")
+
     def is_model_loaded(self, model_name: Optional[str] = None) -> bool:
         """Check whether the target model or any LLM model is currently resident in VRAM.
 
@@ -429,11 +467,12 @@ class WorkloadMonitor:
         """
         target_model = model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b")
         endpoint = getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/generate")
+        self._validate_llm_endpoint(endpoint)
         base_url = endpoint.rsplit("/", 1)[0]
         ps_url = f"{base_url}/ps"
 
         try:
-            resp = requests.get(ps_url, timeout=3)
+            resp = requests.get(ps_url, timeout=3, allow_redirects=False)
             if resp.status_code == 200:
                 data = resp.json()
                 loaded_models = data.get("models") or []
@@ -463,6 +502,7 @@ class WorkloadMonitor:
         """
         target_model = model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b")
         endpoint = getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/generate")
+        self._validate_llm_endpoint(endpoint)
 
         # Determine base URL for Ollama API
         base_url = endpoint.rsplit("/", 1)[0]
@@ -479,6 +519,7 @@ class WorkloadMonitor:
                 unload_url,
                 json={"model": target_model, "keep_alive": 0},
                 timeout=5,
+                allow_redirects=False,
             )
             if resp.status_code == 200:
                 logger.info("✓ Model '%s' unloaded from VRAM via Ollama API.", target_model)
@@ -593,16 +634,34 @@ class WorkloadMonitor:
 
         return True, "System is idle; LLM available"
 
-    def get_status(self) -> Dict[str, Any]:
+    @staticmethod
+    def _sanitize_cooldown_reason(reason: str) -> str:
+        """Strip host PIDs and process names from cooldown reasons before API exposure."""
+        if not reason:
+            return reason
+        if "PID=" in reason or "external workload:" in reason or "consuming" in reason:
+            return "External workstation GPU/CPU workload active"
+        return reason
+
+    def get_status(self, *, include_process_details: bool = True) -> Dict[str, Any]:
         """Get structured status dictionary for web UI and diagnostics without side effects.
+
+        Args:
+            include_process_details: When False, redacts host PIDs and process names
+                from status messages and cooldown reasons.
 
         Returns:
             Dict[str, Any]: Status summary including GPU, CPU, and cooldown state.
         """
         in_cooldown = self.is_in_cooldown()
         rem = self.get_cooldown_remaining()
+        exposed_reason = (
+            self._cooldown_reason
+            if include_process_details
+            else self._sanitize_cooldown_reason(self._cooldown_reason)
+        )
         if in_cooldown:
-            msg = f"In cooldown ({rem}s remaining): {self._cooldown_reason}"
+            msg = f"In cooldown ({rem}s remaining): {exposed_reason}"
         elif self._llm_active:
             msg = "LLM inference currently active"
         else:
@@ -622,7 +681,7 @@ class WorkloadMonitor:
             "status_message": msg,
             "in_cooldown": in_cooldown,
             "cooldown_remaining_seconds": rem,
-            "last_cooldown_reason": self._cooldown_reason or None,
+            "last_cooldown_reason": exposed_reason or None,
             "vram_threshold_mb": self.vram_threshold_mb,
             "gpu_util_threshold": self.gpu_util_threshold,
             "cpu_threshold_pct": self.cpu_threshold_pct,

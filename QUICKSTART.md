@@ -3,8 +3,7 @@
 ## Setup with UV (Recommended)
 
 ```bash
-# 1. Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# 1. Install uv (see https://docs.astral.sh/uv/getting-started/installation/ for package-manager/verified install)
 
 # 2. Create virtual environment and install dependencies
 uv venv
@@ -14,8 +13,9 @@ source .venv/bin/activate  # On Linux/Mac
 # 3. Install the project
 uv pip install -e .
 
-# 4. Copy and configure environment variables
+# 4. Copy and configure environment variables (owner-only permissions)
 cp .env.example .env
+chmod 600 .env
 nano .env  # Edit with your credentials
 
 # 5. Make sure Ollama is running with a model
@@ -29,7 +29,7 @@ python main.py
 # Start the UI
 python run.py
 # Open http://127.0.0.1:5000
-# Visit /setup from localhost to create your UI login
+# Visit /setup from localhost to create your UI login (minimum 12-character password)
 ```
 
 ## Why UV?

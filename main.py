@@ -8,6 +8,7 @@ and automatically creates and sends calendar invites as email replies.
 import time
 import json
 import logging
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Set, Optional, Dict, Any, List
 
@@ -178,12 +179,48 @@ class iCalBot:
         return recovered_ids
 
     def _save_processed_emails(self):
-        """Save the set of processed email IDs"""
+        """Save the set of processed email IDs atomically with owner-only permissions."""
         try:
-            with open(self.processed_emails_file, 'w') as f:
-                json.dump({'processed_ids': list(self.processed_emails)}, f)
+            payload = json.dumps({'processed_ids': list(self.processed_emails)})
+            config.write_private_file(self.processed_emails_file, payload)
         except Exception as e:
             logger.error(f"Error saving processed emails: {e}")
+
+    @staticmethod
+    def _has_external_recipients(recipients: List[str]) -> bool:
+        """Return True if any recipient lies outside the configured internal domain.
+
+        Always allows the bot's own ``EMAIL_ADDRESS``. If ``INTERNAL_EMAIL_DOMAIN``
+        is unset or left at the placeholder ``example.com``, falls back to the
+        domain of ``EMAIL_ADDRESS``.
+
+        Args:
+            recipients: List of candidate recipient addresses or display strings.
+
+        Returns:
+            bool: True when at least one external recipient is present.
+        """
+        self_address = (getattr(config, 'EMAIL_ADDRESS', '') or '').strip().lower()
+        configured_domain = (getattr(config, 'INTERNAL_EMAIL_DOMAIN', '') or '').strip().lower()
+        if configured_domain and configured_domain != 'example.com':
+            internal_domain = configured_domain
+        elif '@' in self_address:
+            internal_domain = self_address.split('@', 1)[1]
+        else:
+            internal_domain = ''
+
+        for raw in recipients or []:
+            parsed = parseaddr(str(raw or ''))[1].strip().lower()
+            if not parsed:
+                continue
+            if self_address and parsed == self_address:
+                continue
+            if not internal_domain:
+                return True
+            dom = parsed.split('@', 1)[1] if '@' in parsed else ''
+            if dom != internal_domain and not dom.endswith(f'.{internal_domain}'):
+                return True
+        return False
     
     def _record_processing_result(
         self,
@@ -219,6 +256,7 @@ class iCalBot:
         send_flag = sent if sent is not None else (has_event and not config.DRY_RUN)
         llm_meta = llm_metadata or {}
         sanitized_raw_result = self._sanitize_llm_payload(llm_meta.get('raw_result'))
+        redacted_prompt = StorageManager._redact_prompt_body(llm_meta.get('prompt'))
         prompt_injection = bool(llm_meta.get('prompt_injection'))
 
         try:
@@ -239,7 +277,7 @@ class iCalBot:
                 dry_run=config.DRY_RUN,
                 status=status,
                 error=error,
-                llm_prompt=llm_meta.get('prompt'),
+                llm_prompt=redacted_prompt,
                 llm_response=llm_meta.get('response_text'),
                 llm_raw_result=sanitized_raw_result,
                 prompt_injection=prompt_injection,
@@ -456,6 +494,13 @@ class iCalBot:
             )
             reply_message = build_reply_message(primary_event, recipients)
 
+            prompt_injection_detected = bool((llm_metadata or {}).get('prompt_injection'))
+            external_recipients = (
+                self._has_external_recipients(recipients)
+                and not getattr(config, 'AUTO_APPROVE_ALLOW_EXTERNAL_RECIPIENTS', False)
+            )
+            force_manual_approval = prompt_injection_detected or external_recipients
+
             if config.DRY_RUN:
                 logger.info("Dry run enabled; storing preview only")
                 self._record_processing_result(
@@ -467,7 +512,7 @@ class iCalBot:
                     ics_content=ics_content,
                     status="dry_run_preview",
                     llm_metadata=llm_metadata,
-                    approval_required=(not self.auto_approve_events) or requires_selection,
+                    approval_required=(not self.auto_approve_events) or requires_selection or force_manual_approval,
                     approval_status="dry_run",
                     sent=False,
                     llm_error_count=0,
@@ -492,8 +537,19 @@ class iCalBot:
                 )
                 return ProcessingResult(invite_sent=False, mark_processed=True, status="pending_approval")
 
-            if not self.auto_approve_events:
-                logger.info("Event requires manual approval before sending")
+            if not self.auto_approve_events or force_manual_approval:
+                if self.auto_approve_events and force_manual_approval:
+                    reasons = []
+                    if prompt_injection_detected:
+                        reasons.append("prompt injection detected")
+                    if external_recipients:
+                        reasons.append("external recipients present")
+                    logger.warning(
+                        "Bypassing AUTO_APPROVE_EVENTS and requiring manual approval (%s)",
+                        ", ".join(reasons),
+                    )
+                else:
+                    logger.info("Event requires manual approval before sending")
                 self._record_processing_result(
                     email_data,
                     has_event=True,

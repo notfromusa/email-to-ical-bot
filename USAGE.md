@@ -17,8 +17,8 @@ python run.py
 Then open: http://127.0.0.1:5000
 
 First-time login:
-- Visit /setup from localhost to set your UI username and password.
-- After setup, use /login (password managers can store it).
+- Visit `/setup` from localhost to set your UI username and password (**minimum 12 characters**).
+- After setup, use `/login` (rate-limited to 5 failed attempts per 15 minutes per IP; password managers can store it) and use **Sign out** in the header to clear your session.
 
 ### Bot Only (No Web UI)
 ```bash
@@ -48,13 +48,19 @@ uv pip install -e .
 
 ## Configuration
 
-Edit `.env` file:
+Edit `.env` file (`chmod 600 .env`):
 - `DRY_RUN=true` - Preview mode (no emails sent)
 - `DRY_RUN=false` - Live mode (emails will be sent)
 - `WEB_UI_PORT=5000` - Change web UI port
 - `CHECK_INTERVAL_SECONDS=300` - How often to check emails
 - `REQUIRE_HTTPS_FOR_REMOTE=true` - Require HTTPS for non-local access
 - `REQUIRE_HTTPS_FOR_LLM=true` - Require HTTPS for non-local LLM endpoints
+- `TRUSTED_PROXY_COUNT=0` - Number of trusted reverse proxies (`0` disables trusting `X-Forwarded-Proto`)
+- `SESSION_COOKIE_SECURE=false` - Force `Secure` session cookie (auto-enabled on HTTPS)
+- `SESSION_LIFETIME_HOURS=12` - Session lifetime in hours
+- `ENFORCE_INTERNAL_RECIPIENT_DOMAIN=false` - Enforce `INTERNAL_EMAIL_DOMAIN` on outbound recipients
+- `AUTO_APPROVE_ALLOW_EXTERNAL_RECIPIENTS=false` - Keep manual approval required for external recipients
+- `EXCHANGE_AUTODISCOVER=false` - Prefer explicit `EXCHANGE_SERVER` over EWS Autodiscover
 
 ## Web Dashboard Features
 

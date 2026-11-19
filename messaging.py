@@ -1,8 +1,17 @@
 """Helpers for composing user-facing reply messages."""
 
+import re
 from typing import Iterable, List, Optional
 
 import config
+
+
+def _sanitize_subject_part(value: Optional[str]) -> str:
+    """Strip CR, LF, and NUL characters from MIME subject line fragments."""
+    if not value:
+        return ""
+    cleaned = re.sub(r"[\r\n\x00]+", " ", str(value))
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def format_invite_subject(
@@ -22,7 +31,8 @@ def format_invite_subject(
     This function prioritizes the specific event's title/candidate description
     over the generic parent email subject. To avoid calendar clutter while preserving
     clear sender provenance, an identifier suffix (e.g., ' (iCal-Bot)') is placed
-    at the end by default.
+    at the end by default. Control characters (CR/LF/NUL) are stripped to prevent
+    MIME header folding errors or injection.
 
     Args:
         event_title: Candidate title or short event description extracted from the email.
@@ -33,13 +43,15 @@ def format_invite_subject(
     Returns:
         Formatted subject line suitable for MIME Subject headers and calendar headlines.
     """
-    pfx = getattr(config, 'INVITE_SUBJECT_PREFIX', '') if prefix is None else prefix
-    sfx = getattr(config, 'INVITE_SUBJECT_SUFFIX', ' (iCal-Bot)') if suffix is None else suffix
+    raw_pfx = getattr(config, 'INVITE_SUBJECT_PREFIX', '') if prefix is None else prefix
+    raw_sfx = getattr(config, 'INVITE_SUBJECT_SUFFIX', ' (iCal-Bot)') if suffix is None else suffix
+    pfx = re.sub(r"[\r\n\x00]+", " ", str(raw_pfx or ""))
+    sfx = re.sub(r"[\r\n\x00]+", " ", str(raw_sfx or ""))
 
     # Choose base title: event_title if present, else original_subject, else fallback
-    base = (event_title or '').strip()
+    base = _sanitize_subject_part(event_title)
     if not base:
-        base = (original_subject or '').strip()
+        base = _sanitize_subject_part(original_subject)
     if not base:
         base = 'Calendar Invite'
 

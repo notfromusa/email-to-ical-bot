@@ -6,10 +6,18 @@ Tests IMAP and SMTP connections separately
 
 import imaplib
 import smtplib
+import ssl
 import sys
 from getpass import getpass
 
 import config
+
+
+def _create_ssl_context() -> ssl.SSLContext:
+    """Create a TLS context with certificate verification, hostname checking, and TLS 1.2+."""
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
 
 
 def test_exchange():
@@ -19,7 +27,7 @@ def test_exchange():
     print("=" * 60)
     
     print(f"Email: {config.EMAIL_ADDRESS}")
-    print(f"Password: {'*' * len(config.EMAIL_PASSWORD) if config.EMAIL_PASSWORD else 'NOT SET'}")
+    print(f"Password: {'*** (set)' if config.EMAIL_PASSWORD else 'NOT SET'}")
     print(f"Autodiscover: {config.EXCHANGE_AUTODISCOVER}")
     if not config.EXCHANGE_AUTODISCOVER:
         print(f"Server: {config.EXCHANGE_SERVER}")
@@ -125,7 +133,7 @@ def test_imap():
     print(f"Server: {config.IMAP_SERVER}")
     print(f"Port: {config.IMAP_PORT}")
     print(f"Email: {config.EMAIL_ADDRESS}")
-    print(f"Password: {'*' * len(config.EMAIL_PASSWORD) if config.EMAIL_PASSWORD else 'NOT SET'}")
+    print(f"Password: {'*** (set)' if config.EMAIL_PASSWORD else 'NOT SET'}")
     
     if 'your-' in config.EMAIL_ADDRESS or 'your-' in config.EMAIL_PASSWORD:
         print("\n❌ ERROR: Email credentials not configured!")
@@ -134,7 +142,7 @@ def test_imap():
     
     try:
         print("\nConnecting to IMAP server...")
-        mail = imaplib.IMAP4_SSL(config.IMAP_SERVER, config.IMAP_PORT)
+        mail = imaplib.IMAP4_SSL(config.IMAP_SERVER, config.IMAP_PORT, ssl_context=_create_ssl_context())
         print("✓ Connected to server")
         
         print("Attempting login...")
@@ -183,15 +191,16 @@ def test_smtp():
     
     try:
         print("\nConnecting to SMTP server...")
+        ssl_ctx = _create_ssl_context()
         
         if config.SMTP_PORT == 465:
-            server = smtplib.SMTP_SSL(config.SMTP_SERVER, config.SMTP_PORT)
+            server = smtplib.SMTP_SSL(config.SMTP_SERVER, config.SMTP_PORT, context=ssl_ctx)
             print("✓ Connected via SSL")
         else:
             server = smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT)
             print("✓ Connected to server")
             print("Starting TLS...")
-            server.starttls()
+            server.starttls(context=ssl_ctx)
             print("✓ TLS started")
         
         print("Attempting login...")
@@ -249,7 +258,7 @@ def interactive_test():
         test_port = int(test_port)
         print(f"\nTesting: {test_email} on {test_server}:{test_port}")
         
-        mail = imaplib.IMAP4_SSL(test_server, test_port)
+        mail = imaplib.IMAP4_SSL(test_server, test_port, ssl_context=_create_ssl_context())
         mail.login(test_email, test_password)
         print("✅ Login successful!")
         mail.logout()

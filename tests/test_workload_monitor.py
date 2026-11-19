@@ -116,6 +116,36 @@ def test_detect_colleague_gpu_utilization():
         offending = monitor.detect_colleague_gpu_utilization()
         assert offending is not None
         assert "85%" in offending
+        assert "python3 (PID=4444)" in offending
+
+    # Above threshold with only whitelisted baseline apps (e.g. remote desktop, firefox, code) -> clear
+    mock_baseline_only = MagicMock(
+        returncode=0,
+        stdout=(
+            "108431, /usr/libexec/gnome-remote-desktop-daemon\n"
+            "20964, /snap/firefox/9181/usr/lib/firefox/firefox\n"
+            "853904, /usr/share/code/code\n"
+        ),
+    )
+
+    def mock_subprocess_baseline(cmd, *args, **kwargs):
+        if "utilization.gpu" in cmd[1]:
+            return MagicMock(returncode=0, stdout="53\n")
+        return mock_baseline_only
+
+    with patch("shutil.which", return_value="/usr/bin/nvidia-smi"), \
+         patch("subprocess.run", side_effect=mock_subprocess_baseline):
+        assert monitor.detect_colleague_gpu_utilization() is None
+
+    # Above threshold with no compute apps on GPU -> clear (transient compositor spike)
+    def mock_subprocess_empty_apps(cmd, *args, **kwargs):
+        if "utilization.gpu" in cmd[1]:
+            return MagicMock(returncode=0, stdout="53\n")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("shutil.which", return_value="/usr/bin/nvidia-smi"), \
+         patch("subprocess.run", side_effect=mock_subprocess_empty_apps):
+        assert monitor.detect_colleague_gpu_utilization() is None
 
 
 def test_cooldown_state_machine():

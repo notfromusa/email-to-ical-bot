@@ -15,8 +15,10 @@ echo "✓ Python 3 found"
 
 # Check if Ollama is installed
 if ! command -v ollama &> /dev/null; then
-    echo "⚠️  Ollama not found. Installing..."
-    curl -fsSL https://ollama.ai/install.sh | sh
+    echo "⚠️  Ollama not found."
+    echo "   For security, this script does not pipe remote install scripts to sh."
+    echo "   Install Ollama via your OS package manager or verify the installer from https://ollama.com/download, then re-run setup.sh."
+    exit 1
 else
     echo "✓ Ollama found"
 fi
@@ -47,12 +49,14 @@ echo "✓ Dependencies installed"
 if [ ! -f .env ]; then
     echo "📝 Creating .env file from template..."
     cp .env.example .env
+    chmod 600 .env
     echo ""
     echo "⚠️  IMPORTANT: Edit the .env file with your email credentials!"
     echo "   nano .env  (or use your preferred editor)"
     echo ""
 else
-    echo "✓ .env file already exists"
+    chmod 600 .env
+    echo "✓ .env file already exists (permissions set to 0600)"
 fi
 
 echo ""

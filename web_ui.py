@@ -2,18 +2,36 @@
 Web UI for monitoring iCal Bot
 """
 
+import hmac
 import json
 import os
+import secrets
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
 
-from flask import Flask, Response, render_template, jsonify, request, session, redirect, url_for, send_from_directory
+from flask import (
+    Flask,
+    Response,
+    g,
+    has_request_context,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
+from flask.sessions import SecureCookieSessionInterface
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
@@ -29,8 +47,45 @@ from main import iCalBot
 # Suppress verbose HTTP request access logs from Werkzeug
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
+class DynamicSecureCookieSessionInterface(SecureCookieSessionInterface):
+    """Session interface that sets the Secure cookie flag whenever served over HTTPS."""
+
+    def get_cookie_secure(self, app_obj: Flask) -> bool:
+        """Return True if SESSION_COOKIE_SECURE is forced or the current request uses HTTPS."""
+        if app_obj.config.get('SESSION_COOKIE_SECURE'):
+            return True
+        if has_request_context():
+            return bool(request.is_secure)
+        return False
+
+
 app = Flask(__name__)
+app.session_interface = DynamicSecureCookieSessionInterface()
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = bool(getattr(config, 'SESSION_COOKIE_SECURE', False))
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
+    hours=max(1, int(getattr(config, 'SESSION_LIFETIME_HOURS', 12)))
+)
+app.config['MAX_CONTENT_LENGTH'] = int(getattr(config, 'WEB_UI_MAX_CONTENT_LENGTH', 1_048_576))
+app.config['CSRF_ENABLED'] = True
+
+_trusted_proxy_count = max(0, int(getattr(config, 'TRUSTED_PROXY_COUNT', 0)))
+if _trusted_proxy_count > 0:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app,
+        x_for=_trusted_proxy_count,
+        x_proto=_trusted_proxy_count,
+        x_host=_trusted_proxy_count,
+        x_port=_trusted_proxy_count,
+    )
+
 _auth_warning_logged = False
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 900
+_DUMMY_PASSWORD_HASH = generate_password_hash("dummy-timing-equalizer-secret")
 
 
 def _auth_store_path() -> Path:
@@ -68,14 +123,10 @@ def _load_auth() -> dict:
 
 
 def _save_auth(username: str, password_hash: str) -> None:
+    """Persist UI authentication credentials atomically with 0600 permissions."""
     store = _auth_store_path()
-    store.parent.mkdir(parents=True, exist_ok=True)
     payload = {'username': username, 'password_hash': password_hash, 'must_change': False}
-    store.write_text(json.dumps(payload), encoding='utf-8')
-    try:
-        os.chmod(store, 0o600)
-    except Exception:
-        pass
+    config.write_private_file(store, json.dumps(payload))
 
 
 def _check_auth() -> bool:
@@ -83,20 +134,100 @@ def _check_auth() -> bool:
 
 
 def _is_local_request() -> bool:
+    """Return True only for direct loopback requests without proxy forwarding headers."""
     remote_addr = request.remote_addr or ''
     if remote_addr not in {'127.0.0.1', '::1'}:
         return False
-    # Treat proxied requests as non-local to avoid Host spoofing
-    if request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP'):
+    # Treat proxied requests as non-local to avoid Host/X-Forwarded spoofing
+    if request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP') or request.headers.get('Forwarded'):
         return False
     return True
 
 
 def _is_secure_request() -> bool:
-    if request.is_secure:
-        return True
-    forwarded_proto = request.headers.get('X-Forwarded-Proto', '')
-    return forwarded_proto.lower() == 'https'
+    """Return True only when Flask/Werkzeug (optionally via configured ProxyFix) reports HTTPS."""
+    return bool(request.is_secure)
+
+
+def _normalize_host(netloc: str, scheme: str) -> str:
+    """Normalize a host[:port] string by lowercasing and stripping default HTTP/HTTPS ports."""
+    host = (netloc or '').strip().lower()
+    if scheme == 'http' and host.endswith(':80'):
+        host = host[:-3]
+    elif scheme == 'https' and host.endswith(':443'):
+        host = host[:-4]
+    return host
+
+
+def _get_csrf_token() -> str:
+    """Return or initialize the per-session CSRF synchronizer token."""
+    token = session.get('csrf_token')
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session['csrf_token'] = token
+    return token
+
+
+def _validate_csrf() -> bool:
+    """Validate same-origin (when non-null Origin is present) and CSRF token on state-changing requests."""
+    origin = request.headers.get('Origin')
+    if origin and origin.strip().lower() != 'null':
+        parsed = urlparse(origin)
+        if parsed.scheme not in {'http', 'https'} or _normalize_host(parsed.netloc, parsed.scheme) != _normalize_host(request.host, request.scheme):
+            app.logger.warning(
+                "CSRF validation failed: origin_mismatch (path=%s, origin=%r, host=%r)",
+                request.path,
+                origin,
+                request.host,
+            )
+            return False
+    submitted = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
+    expected = session.get('csrf_token')
+    if not expected:
+        app.logger.warning("CSRF validation failed: missing_session_token (path=%s)", request.path)
+        return False
+    if not submitted:
+        app.logger.warning("CSRF validation failed: missing_submitted_token (path=%s)", request.path)
+        return False
+    if not hmac.compare_digest(str(submitted), str(expected)):
+        app.logger.warning("CSRF validation failed: token_mismatch (path=%s)", request.path)
+        return False
+    return True
+
+
+def _reset_login_rate_limits() -> None:
+    """Clear failed login tracking state (primarily for test isolation)."""
+    with _LOGIN_LOCK:
+        _LOGIN_ATTEMPTS.clear()
+
+
+def _is_login_rate_limited(client_key: str) -> tuple[bool, int]:
+    """Check whether the given client IP key is currently rate-limited for login."""
+    now = time.monotonic()
+    cutoff = now - _LOGIN_WINDOW_SECONDS
+    with _LOGIN_LOCK:
+        attempts = [ts for ts in _LOGIN_ATTEMPTS.get(client_key, []) if ts > cutoff]
+        _LOGIN_ATTEMPTS[client_key] = attempts
+        if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+            retry_after = max(1, int(_LOGIN_WINDOW_SECONDS - (now - attempts[0])))
+            return True, retry_after
+    return False, 0
+
+
+def _record_login_failure(client_key: str) -> None:
+    """Record a failed login timestamp for sliding-window rate limiting."""
+    now = time.monotonic()
+    cutoff = now - _LOGIN_WINDOW_SECONDS
+    with _LOGIN_LOCK:
+        attempts = [ts for ts in _LOGIN_ATTEMPTS.get(client_key, []) if ts > cutoff]
+        attempts.append(now)
+        _LOGIN_ATTEMPTS[client_key] = attempts
+
+
+def _clear_login_failures(client_key: str) -> None:
+    """Clear failed login attempts for a client IP after successful login."""
+    with _LOGIN_LOCK:
+        _LOGIN_ATTEMPTS.pop(client_key, None)
 
 
 def _credentials_ready() -> bool:
@@ -107,26 +238,63 @@ def _credentials_ready() -> bool:
 
 
 def _ensure_secret_key() -> None:
+    """Load or atomically generate the persistent Flask session signing secret."""
     secret_path = _auth_secret_path()
     if secret_path.exists():
         app.secret_key = secret_path.read_text(encoding='utf-8').strip()
+        try:
+            os.chmod(secret_path, 0o600)
+        except OSError:
+            pass
         return
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
     secret = os.urandom(32).hex()
-    secret_path.write_text(secret, encoding='utf-8')
-    try:
-        os.chmod(secret_path, 0o600)
-    except Exception:
-        pass
+    config.write_private_file(secret_path, secret)
     app.secret_key = secret
+
+
+_ensure_secret_key()
+
+
+@app.context_processor
+def inject_security_context():
+    """Expose per-session CSRF token and per-request CSP nonce to Jinja templates."""
+    return {
+        'csrf_token': _get_csrf_token(),
+        'csp_nonce': getattr(g, 'csp_nonce', ''),
+    }
 
 
 @app.before_request
 def enforce_auth():
+    """Enforce remote HTTPS, CSRF validation, and session authentication before each request."""
     global _auth_warning_logged
+    g.csp_nonce = secrets.token_urlsafe(16)
     path = request.path or ''
     if getattr(config, 'REQUIRE_HTTPS_FOR_REMOTE', True) and not _is_local_request() and not _is_secure_request():
         return Response('HTTPS required', 400)
+    if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'} and app.config.get('CSRF_ENABLED', True):
+        if not _validate_csrf():
+            if path in {'/login', '/login/'}:
+                _get_csrf_token()
+                return (
+                    render_template(
+                        'login.html',
+                        error='CSRF token missing or invalid. The form has been refreshed — please try again.',
+                    ),
+                    403,
+                )
+            if path in {'/setup', '/setup/'} and _is_local_request():
+                _get_csrf_token()
+                return (
+                    render_template(
+                        'setup.html',
+                        error='CSRF token missing or invalid. The form has been refreshed — please try again.',
+                    ),
+                    403,
+                )
+            if path.startswith('/api/'):
+                return jsonify({'error': 'CSRF token missing or invalid'}), 403
+            return Response('CSRF token missing or invalid', 403)
     if path.startswith('/setup') or path.startswith('/login') or path.startswith('/static') or path == '/favicon.ico':
         return None
     if not _auth_configured():
@@ -139,10 +307,40 @@ def enforce_auth():
     if _auth_requires_change():
         return redirect(url_for('setup'))
     if _check_auth():
+        _get_csrf_token()
         return None
     if path.startswith('/api/'):
         return jsonify({'error': 'Authentication required'}), 401
     return redirect(url_for('login'))
+
+
+@app.after_request
+def add_security_headers(response: Response) -> Response:
+    """Attach HTTP security headers (CSP, frame-ancestors, nosniff, Referrer-Policy, HSTS)."""
+    nonce = getattr(g, 'csp_nonce', '')
+    csp = (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "object-src 'none'"
+    )
+    response.headers.setdefault('Content-Security-Policy', csp)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'same-origin')
+    response.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    if _is_secure_request():
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    path = request.path or ''
+    if path.startswith('/api/') or path in {'/', '/login', '/setup'}:
+        response.headers.setdefault('Cache-Control', 'no-store')
+    return response
 
 # Global variable to hold bot instance
 bot_instance = None
@@ -472,9 +670,10 @@ def get_stats():
     stats.setdefault('total_events', stats.get('events_detected', 0))
     try:
         from workload_monitor import get_workload_monitor
-        stats['workload'] = get_workload_monitor().get_status()
+        stats['workload'] = get_workload_monitor().get_status(include_process_details=False)
     except Exception as exc:
-        stats['workload'] = {'error': str(exc)}
+        app.logger.warning("Failed to get workload status for stats: %s", exc)
+        stats['workload'] = {'error': 'Workload status unavailable'}
     return stats
 
 
@@ -547,7 +746,7 @@ def api_approve_event(email_id):
             sent_indices = []
 
     request_payload = request.get_json(silent=True) or {} if request.is_json else {}
-    approver = request_payload.get('approver')
+    approver = session.get('username') or 'authenticated-user'
     selected_event_index = request_payload.get('selected_event_index')
     if selected_event_index is not None:
         try:
@@ -612,10 +811,10 @@ def api_approve_event(email_id):
             status='send_error',
             sent=False,
             approver=approver,
-            error=str(exc),
+            error='Failed to send invite. Check server logs for details.',
         )
         app.logger.error("Failed to approve event %s: %s", email_id, exc)
-        return jsonify({'error': f'Failed to send invite: {exc}'}), 500
+        return jsonify({'error': 'Failed to send invite. Check server logs for details.'}), 500
 
 
 @app.route('/api/events/<email_id>/decline', methods=['POST'])
@@ -632,11 +831,10 @@ def api_decline_event(email_id):
     if record.get('approval_status') == 'approved':
         return jsonify({'error': 'This event has already been approved'}), 400
 
-    actor = None
+    actor = session.get('username') or 'authenticated-user'
     reason = None
     if request.is_json:
         payload = request.get_json(silent=True) or {}
-        actor = payload.get('approver') or payload.get('actor')
         reason = payload.get('reason')
 
     storage.mark_event_declined(email_id, actor=actor, note=reason)
@@ -660,7 +858,7 @@ def api_rescan_event(email_id):
 
     payload = request.get_json(silent=True) or {} if request.is_json else {}
     double_check = bool(payload.get('double_check', False))
-    actor = payload.get('approver') or payload.get('actor') or 'User'
+    actor = session.get('username') or 'authenticated-user'
     rescan_hint = payload.get('hint') or payload.get('notes') or payload.get('rescan_hint')
 
     mail_client = ExchangeClient() if config.EMAIL_PROTOCOL == "EXCHANGE" else EmailClient()
@@ -673,7 +871,7 @@ def api_rescan_event(email_id):
         )
     except Exception as exc:
         app.logger.error("Error fetching email %s from mailbox: %s", email_id, exc)
-        return jsonify({'error': f'Failed to retrieve email from mailbox: {exc}'}), 500
+        return jsonify({'error': 'Failed to retrieve email from mailbox.'}), 500
 
     if not email_data:
         return jsonify({'error': f'Could not locate this email in your mailbox inbox (ID: {email_id}). It may have been moved, deleted, or is older than the scan window.'}), 404
@@ -690,7 +888,7 @@ def api_rescan_event(email_id):
         )
     except Exception as exc:
         app.logger.error("LLM extraction failed during rescan for %s: %s", email_id, exc)
-        return jsonify({'error': f'LLM extraction failed: {exc}'}), 500
+        return jsonify({'error': 'LLM extraction failed.'}), 500
 
     candidates = _event_candidates_from_event_data(event_data)
     has_event = bool(candidates)
@@ -729,7 +927,7 @@ def api_rescan_event(email_id):
         approval_required=True if has_event else False,
         approval_status='pending' if has_event else None,
         email_recipients=email_data.get('recipients') or record.get('email_recipients'),
-        llm_prompt=metadata.get('prompt'),
+        llm_prompt=StorageManager._redact_prompt_body(metadata.get('prompt')),
         llm_response=metadata.get('response_text'),
         llm_raw_result=metadata.get('raw_result'),
         prompt_injection=metadata.get('prompt_injection', False),
@@ -776,7 +974,8 @@ def api_preview_ics(email_id):
         ics_content = generator.create_ics_invite(event_payload, recipients=recipients)
         return jsonify({'ok': True, 'ics_content': ics_content})
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 400
+        app.logger.warning("Failed to generate ICS preview for %s: %s", email_id, exc)
+        return jsonify({'error': 'Invalid event parameters for ICS generation.'}), 400
 
 
 @app.route('/api/stats')
@@ -791,7 +990,7 @@ def api_stats():
 def api_workload_status():
     """API endpoint for workstation GPU/CPU workload and cooldown status"""
     from workload_monitor import get_workload_monitor
-    return jsonify(get_workload_monitor().get_status())
+    return jsonify(get_workload_monitor().get_status(include_process_details=False))
 
 
 @app.route('/api/workload/unload', methods=['POST'])
@@ -802,8 +1001,14 @@ def api_workload_unload():
     success = monitor.unload_model()
     return jsonify({
         'ok': success,
-        'status': monitor.get_status(),
+        'status': monitor.get_status(include_process_details=False),
     })
+
+
+@app.route('/api/csrf-token')
+def api_csrf_token():
+    """Return the active per-session CSRF token for authenticated dashboard tabs."""
+    return jsonify({'csrf_token': _get_csrf_token()})
 
 
 @app.route('/api/config')
@@ -839,14 +1044,16 @@ def api_credentials_status():
 
 @app.route('/api/credentials', methods=['POST'])
 def api_set_credentials():
+    """Update in-memory mailbox credentials via JSON payload."""
     if getattr(config, 'REQUIRE_HTTPS_FOR_CREDENTIALS', True) and not (_is_secure_request() or _is_local_request()):
         return jsonify({'error': 'TLS required for credential submission'}), 400
 
-    payload = None
-    if request.is_json:
-        payload = request.get_json(silent=True) or {}
-    if payload is None:
-        payload = request.form or {}
+    if not request.is_json:
+        return jsonify({'error': 'Content-Type must be application/json'}), 415
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({'error': 'Invalid JSON payload'}), 400
 
     password = (payload.get('password') or '').strip()
     email_address = (payload.get('email_address') or '').strip()
@@ -879,7 +1086,7 @@ def api_censor_database():
         return jsonify({'ok': True, **result})
     except Exception as exc:
         app.logger.error("Database censoring failed: %s", exc)
-        return jsonify({'error': f'Failed to censor database: {exc}'}), 500
+        return jsonify({'error': 'Failed to censor database.'}), 500
 
 
 @app.route('/api/database/purge', methods=['POST'])
@@ -889,7 +1096,7 @@ def api_purge_database():
         return jsonify({'ok': True, **result})
     except Exception as exc:
         app.logger.error("Database purge failed: %s", exc)
-        return jsonify({'error': f'Failed to purge database: {exc}'}), 500
+        return jsonify({'error': 'Failed to purge database.'}), 500
 
 
 @app.route('/api/database/repair', methods=['POST'])
@@ -899,11 +1106,12 @@ def api_repair_database():
         return jsonify({'ok': True, **result})
     except Exception as exc:
         app.logger.error("Database repair failed: %s", exc)
-        return jsonify({'error': f'Failed to repair database: {exc}'}), 500
+        return jsonify({'error': 'Failed to repair database.'}), 500
 
 
 @app.route('/setup', methods=['GET', 'POST'])
 def setup():
+    """Initial local-only Web UI account setup with minimum password length enforcement."""
     if not _is_local_request():
         return Response('Forbidden', 403)
     if _auth_configured() and not _auth_requires_change():
@@ -914,37 +1122,68 @@ def setup():
         password = (request.form.get('password') or '').strip()
         if not username or not password:
             error = 'Username and password are required.'
+        elif len(password) < 12:
+            error = 'Password must be at least 12 characters long.'
         else:
             password_hash = generate_password_hash(password)
             _save_auth(username, password_hash)
+            session.clear()
+            session.permanent = True
             session['authenticated'] = True
             session['username'] = username
+            session['csrf_token'] = secrets.token_urlsafe(32)
             return redirect(url_for('index'))
     return render_template('setup.html', error=error)
 
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """Authenticate Web UI user with rate limiting and constant-time username/password checks."""
     if not _auth_configured():
         return redirect(url_for('setup'))
     if _auth_requires_change():
         return redirect(url_for('setup'))
     error = None
     if request.method == 'POST':
+        client_key = request.remote_addr or 'unknown'
+        limited, retry_after = _is_login_rate_limited(client_key)
+        if limited:
+            resp = Response('Too many failed login attempts. Try again later.', 429)
+            resp.headers['Retry-After'] = str(retry_after)
+            return resp
+
         username = (request.form.get('username') or '').strip()
         password = (request.form.get('password') or '').strip()
         auth = _load_auth()
+        stored_username = str(auth.get('username') or '')
+        stored_hash = str(auth.get('password_hash') or '')
         if not username or not password:
             error = 'Username and password are required.'
-        elif username != auth.get('username'):
-            error = 'Invalid username or password.'
-        elif not check_password_hash(auth.get('password_hash', ''), password):
-            error = 'Invalid username or password.'
         else:
-            session['authenticated'] = True
-            session['username'] = username
-            return redirect(url_for('index'))
+            username_ok = bool(stored_username) and hmac.compare_digest(username, stored_username)
+            candidate_hash = stored_hash if (username_ok and stored_hash) else _DUMMY_PASSWORD_HASH
+            password_ok = check_password_hash(candidate_hash, password)
+            if not (username_ok and password_ok):
+                _record_login_failure(client_key)
+                error = 'Invalid username or password.'
+            else:
+                _clear_login_failures(client_key)
+                session.clear()
+                session.permanent = True
+                session['authenticated'] = True
+                session['username'] = username
+                session['csrf_token'] = secrets.token_urlsafe(32)
+                return redirect(url_for('index'))
     return render_template('login.html', error=error)
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    """Clear the authenticated Web UI session and redirect or acknowledge JSON clients."""
+    session.clear()
+    if request.is_json or 'application/json' in (request.headers.get('Accept') or ''):
+        return jsonify({'ok': True})
+    return redirect(url_for('login'))
 
 
 def _start_manual_check():
@@ -966,7 +1205,7 @@ def _start_manual_check():
             last_manual_check = datetime.utcnow().isoformat()
             last_manual_error = None
         except Exception as exc:
-            last_manual_error = str(exc)
+            last_manual_error = 'Manual email check failed. Check server logs.'
             app.logger.error("Manual email check failed: %s", exc)
         finally:
             bot_running = False
@@ -1005,13 +1244,12 @@ def api_manual_evaluate():
         )
     except Exception as exc:
         app.logger.error("LLM evaluation failed during manual eval: %s", exc)
-        prompt_val = getattr(exc, 'metadata', {}).get('prompt') if hasattr(exc, 'metadata') else None
         return jsonify({
             'ok': False,
-            'error': f'LLM evaluation failed: {exc}',
+            'error': 'LLM evaluation failed.',
             'has_event': False,
             'events': [],
-            'llm_prompt': prompt_val,
+            'llm_prompt': None,
             'llm_response': None,
         }), 502
 
@@ -1025,7 +1263,7 @@ def api_manual_evaluate():
         'selected_event_index': None,
         'ics_content': None,
         'ics_error': None,
-        'llm_prompt': metadata.get('prompt'),
+        'llm_prompt': StorageManager._redact_prompt_body(metadata.get('prompt')),
         'llm_response': metadata.get('response_text'),
         'llm_raw_result': iCalBot._sanitize_llm_payload(metadata.get('raw_result')),
         'prompt_injection': bool(metadata.get('prompt_injection')),
@@ -1057,21 +1295,20 @@ def api_manual_evaluate():
     try:
         response_payload['ics_content'] = generator.create_ics_invite(selected_event, recipients=recipients or None)
     except Exception as exc:
-        response_payload['ics_error'] = str(exc)
+        app.logger.warning("ICS generation failed during manual eval: %s", exc)
+        response_payload['ics_error'] = 'Failed to generate ICS preview.'
 
     return jsonify(response_payload)
 
 
 @app.route('/api/manual-evaluate/send-self', methods=['POST'])
 def api_manual_evaluate_send_self():
+    """Regenerate ICS server-side from validated event fields and send invite to self."""
     if not _credentials_ready():
         return jsonify({'error': 'Mailbox credentials are not configured'}), 409
 
     payload = request.get_json(silent=True) or {}
     subject = (payload.get('subject') or '').strip() or '(Manual evaluation)'
-    ics_content = (payload.get('ics_content') or '').strip()
-    if not ics_content:
-        return jsonify({'error': 'ICS content is required'}), 400
 
     self_address = (getattr(config, 'EMAIL_ADDRESS', '') or '').strip()
     if not self_address:
@@ -1080,20 +1317,26 @@ def api_manual_evaluate_send_self():
     selected_event = payload.get('selected_event')
     event_payload = selected_event if isinstance(selected_event, dict) else payload.get('event')
     if not isinstance(event_payload, dict):
-        event_payload = {}
+        return jsonify({'error': 'Selected event data is required'}), 400
 
     normalized_event = {
-        'title': event_payload.get('title') or subject,
-        'description': event_payload.get('description') or '',
-        'start_datetime': event_payload.get('start_datetime') or '',
-        'end_datetime': event_payload.get('end_datetime') or '',
-        'location': event_payload.get('location') or '',
+        'title': str(event_payload.get('title') or subject).strip() or subject,
+        'description': str(event_payload.get('description') or '').strip(),
+        'start_datetime': str(event_payload.get('start_datetime') or '').strip(),
+        'end_datetime': str(event_payload.get('end_datetime') or '').strip(),
+        'location': str(event_payload.get('location') or '').strip(),
     }
+    if not normalized_event['start_datetime'] or not normalized_event['end_datetime']:
+        return jsonify({'error': 'Event start_datetime and end_datetime are required'}), 400
 
-    if normalized_event.get('start_datetime'):
-        reply_message = build_reply_message(normalized_event, [self_address])
-    else:
-        reply_message = 'I generated the attached calendar invite from manual evaluation.'
+    generator = CalendarGenerator()
+    try:
+        ics_content = generator.create_ics_invite(normalized_event, recipients=[self_address])
+    except Exception as exc:
+        app.logger.warning("Failed to regenerate manual evaluation ICS: %s", exc)
+        return jsonify({'error': 'Invalid event parameters for ICS generation'}), 400
+
+    reply_message = build_reply_message(normalized_event, [self_address])
 
     mail_client = ExchangeClient() if config.EMAIL_PROTOCOL == "EXCHANGE" else EmailClient()
     original_email = {
@@ -1117,7 +1360,7 @@ def api_manual_evaluate_send_self():
         return jsonify({'ok': True, 'send_result': send_result})
     except Exception as exc:
         app.logger.error("Failed to send manual evaluation ICS to self: %s", exc)
-        return jsonify({'error': f'Failed to send invite: {exc}'}), 500
+        return jsonify({'error': 'Failed to send invite.'}), 500
 
 
 def create_templates():

@@ -78,15 +78,30 @@ case "$ACTION" in
 
     mkdir -p "$DEST_DIR"
 
-    # Template the unit file
-    sed -e "s|User=.*|User=${TARGET_USER}|g" \
-        -e "s|Group=.*|Group=${TARGET_GROUP}|g" \
-        -e "s|WorkingDirectory=.*|WorkingDirectory=${SCRIPT_DIR}|g" \
-        -e "s|ExecStart=.*|ExecStart=${EXEC_START}|g" \
-        -e "s|EnvironmentFile=-.*|EnvironmentFile=-${SCRIPT_DIR}/.env|g" \
-        -e "s|Environment=HOME=.*|Environment=HOME=${TARGET_HOME}|g" \
-        -e "s|Environment=PATH=.*|Environment=PATH=${TARGET_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|g" \
+    escape_sed_replacement() {
+      printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+    }
+
+    ESC_USER="$(escape_sed_replacement "$TARGET_USER")"
+    ESC_GROUP="$(escape_sed_replacement "$TARGET_GROUP")"
+    ESC_DIR="$(escape_sed_replacement "$SCRIPT_DIR")"
+    ESC_EXEC="$(escape_sed_replacement "$EXEC_START")"
+    ESC_HOME="$(escape_sed_replacement "$TARGET_HOME")"
+
+    # Template the unit file safely
+    sed -e "s|User=.*|User=${ESC_USER}|g" \
+        -e "s|Group=.*|Group=${ESC_GROUP}|g" \
+        -e "s|WorkingDirectory=.*|WorkingDirectory=${ESC_DIR}|g" \
+        -e "s|ReadWritePaths=.*|ReadWritePaths=${ESC_DIR}|g" \
+        -e "s|ExecStart=.*|ExecStart=${ESC_EXEC}|g" \
+        -e "s|EnvironmentFile=-.*|EnvironmentFile=-${ESC_DIR}/.env|g" \
+        -e "s|Environment=HOME=.*|Environment=HOME=${ESC_HOME}|g" \
+        -e "s|Environment=PATH=.*|Environment=PATH=${ESC_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|g" \
         "$SOURCE_UNIT" > "$DEST_UNIT"
+
+    if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+      chmod 600 "${SCRIPT_DIR}/.env"
+    fi
 
     # In user mode, User= and Group= directives must not be present, and target is default.target
     if [[ "$IS_USER_MODE" == true ]]; then

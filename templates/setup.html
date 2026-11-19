@@ -71,15 +71,16 @@
 <body>
     <div class="card">
         <h1>Set up local UI auth</h1>
-        <p>Set a new username/password for the web UI. Setup is only allowed from localhost.</p>
+        <p>Set a new username/password (minimum 12 characters) for the web UI. Setup is only allowed from localhost.</p>
         {% if error %}
         <div class="error">{{ error }}</div>
         {% endif %}
         <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="username">Username</label>
             <input id="username" name="username" type="text" autocomplete="username" required>
             <label for="password">Password</label>
-            <input id="password" name="password" type="password" autocomplete="new-password" required>
+            <input id="password" name="password" type="password" autocomplete="new-password" minlength="12" required>
             <button type="submit">Create login</button>
         </form>
     </div>

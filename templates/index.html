@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>iCal Bot Observatory</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <link rel="alternate icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32x32.png') }}">
@@ -11,8 +12,6 @@
     <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
     <meta name="theme-color" content="#0b1221">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
-
         :root {
             --ink: #0b1221;
             --panel: #101b33;
@@ -1241,10 +1240,13 @@
     <header class="hero">
         <div class="hero-title">
             <h1>iCal Bot Observatory</h1>
+            <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
                 <div id="credential-summary" class="status-pill hidden">
                     Credentials are configured in memory.
-                    <button class="pill-button" type="button" onclick="toggleCredentialForm(true)">Change</button>
+                    <button class="pill-button" id="credential-change-btn" type="button">Change</button>
                 </div>
+                <button class="pill-button" id="logout-btn" type="button">Sign out</button>
+            </div>
         </div>
         <p>Live view of every email the bot inspected, how the LLM interpreted it, and whether an invite was generated. Use the filters to flip between confirmed events and informational scans.</p>
     </header>
@@ -1292,7 +1294,7 @@
             <div class="status-pill" id="credential-status">Status: unknown</div>
             <p class="detail-hint" id="credential-message"></p>
             <div id="credentials-form-wrapper">
-                <form class="credentials-form" onsubmit="event.preventDefault(); submitCredentials();">
+                <form class="credentials-form" id="credentials-form">
                     <div class="input-field">
                         <label for="credential-email">Email address (optional override)</label>
                         <input id="credential-email" type="email" autocomplete="username" placeholder="you@example.com">
@@ -1318,11 +1320,11 @@
                     <div class="feed-title-row">
                         <h2>Processing feed</h2>
                         <div class="view-mode-toggle" role="tablist" aria-label="View mode">
-                            <button class="view-chip active" id="view-mode-calendar" type="button" role="tab" aria-selected="true" onclick="setViewMode('calendar')">
+                            <button class="view-chip active" id="view-mode-calendar" type="button" role="tab" aria-selected="true">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
                                 <span>Calendar</span>
                             </button>
-                            <button class="view-chip" id="view-mode-list" type="button" role="tab" aria-selected="false" onclick="setViewMode('list')">
+                            <button class="view-chip" id="view-mode-list" type="button" role="tab" aria-selected="false">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
                                 <span>List</span>
                             </button>
@@ -1337,15 +1339,15 @@
                     </div>
                 </div>
                 <div class="feed-actions">
-                    <button class="pill-button accent" id="manual-check-btn" type="button" onclick="triggerManualCheck()">Scan Inbox Now</button>
-                    <button class="pill-button" type="button" onclick="openManualEval()">Evaluate pasted email</button>
-                    <button class="pill-button" id="attachment-toggle-btn" type="button" onclick="toggleAttachmentParsing()">Attachments: ON</button>
+                    <button class="pill-button accent" id="manual-check-btn" type="button">Scan Inbox Now</button>
+                    <button class="pill-button" id="manual-eval-open-btn" type="button">Evaluate pasted email</button>
+                    <button class="pill-button" id="attachment-toggle-btn" type="button">Attachments: ON</button>
                     <div class="db-pill" id="manual-check-pill">Last scan: <span id="last-manual-check">—</span></div>
                     <div class="db-pill">
                         DB entries: <span id="db-entries">-</span> · Size: <span id="db-size">-</span>
                     </div>
-                    <button class="pill-button alert" type="button" onclick="censorDatabase()">Censor stored data</button>
-                    <button class="pill-button warn" type="button" onclick="purgeOldEntries()">Purge 1+ week history</button>
+                    <button class="pill-button alert" id="censor-db-btn" type="button">Censor stored data</button>
+                    <button class="pill-button warn" id="purge-db-btn" type="button">Purge 1+ week history</button>
                 </div>
             </div>
 
@@ -1353,15 +1355,15 @@
             <div id="calendar-view-container" class="calendar-container">
                 <div class="calendar-toolbar">
                     <div class="calendar-nav-group">
-                        <button class="pill-button" id="cal-prev-btn" type="button" onclick="navigateCalendar(-1)" aria-label="Previous">&lt; Prev</button>
-                        <button class="pill-button" id="cal-today-btn" type="button" onclick="navigateCalendarToday()">Today</button>
-                        <button class="pill-button" id="cal-next-btn" type="button" onclick="navigateCalendar(1)" aria-label="Next">Next &gt;</button>
+                        <button class="pill-button" id="cal-prev-btn" type="button" aria-label="Previous">&lt; Prev</button>
+                        <button class="pill-button" id="cal-today-btn" type="button">Today</button>
+                        <button class="pill-button" id="cal-next-btn" type="button" aria-label="Next">Next &gt;</button>
                     </div>
                     <div class="calendar-heading" id="cal-current-label">November 2026</div>
                     <div class="calendar-toolbar-right">
                         <div class="calendar-subview-toggle" role="tablist" aria-label="Calendar view type">
-                            <button class="subview-chip active" id="subview-month-btn" type="button" role="tab" aria-selected="true" onclick="setCalendarSubView('month')">Month</button>
-                            <button class="subview-chip" id="subview-week-btn" type="button" role="tab" aria-selected="false" onclick="setCalendarSubView('week')">Week</button>
+                            <button class="subview-chip active" id="subview-month-btn" type="button" role="tab" aria-selected="true">Month</button>
+                            <button class="subview-chip" id="subview-week-btn" type="button" role="tab" aria-selected="false">Week</button>
                         </div>
                     </div>
                 </div>
@@ -1380,7 +1382,7 @@
 
     <div class="modal" id="details-modal">
         <div class="modal__content">
-            <button type="button" class="close-btn" onclick="closeDetails()" aria-label="Close modal">&times;</button>
+            <button type="button" class="close-btn" id="details-close-x" aria-label="Close modal">&times;</button>
             <h2 id="detail-title">Event details</h2>
             <div id="detail-injection-warning" class="status-tag info" style="display:none; margin-bottom: 0.75rem;">
                 Prompt injection flagged · Review details carefully
@@ -1420,7 +1422,7 @@
                         </label>
                         <span class="detail-hint" style="margin: 0; font-size: 0.78rem;">Re-reads mailbox message and audits dates, times &amp; participants</span>
                     </div>
-                    <button type="button" class="pill-button" id="detail-rescan-btn" onclick="rescanCurrentEmail()">
+                    <button type="button" class="pill-button" id="detail-rescan-btn">
                         🔄 Rescan Email
                     </button>
                 </div>
@@ -1469,16 +1471,16 @@
             <div class="modal__actions">
                 <input type="text" id="approver-input" placeholder="Your name (optional)">
                 <textarea id="decision-note-input" placeholder="Decision note (optional)"></textarea>
-                <button type="button" class="pill-button" onclick="closeDetails()">Close</button>
-                <button type="button" class="pill-button warn" id="detail-decline-btn" onclick="declineCurrentEvent()">Decline</button>
-                <button type="button" class="pill-button accent" id="detail-approve-btn" onclick="approveCurrentEvent()">Approve &amp; Send</button>
+                <button type="button" class="pill-button" id="details-close-btn">Close</button>
+                <button type="button" class="pill-button warn" id="detail-decline-btn">Decline</button>
+                <button type="button" class="pill-button accent" id="detail-approve-btn">Approve &amp; Send</button>
             </div>
         </div>
     </div>
 
     <div class="modal" id="manual-eval-modal">
         <div class="modal__content">
-            <button type="button" class="close-btn" onclick="closeManualEval()" aria-label="Close modal">&times;</button>
+            <button type="button" class="close-btn" id="manual-eval-close-x" aria-label="Close modal">&times;</button>
             <h2>Evaluate pasted email text</h2>
             <p class="detail-hint">Paste subject/body and run the current LLM extraction prompt without storing anything in history.</p>
             <div class="manual-eval-form">
@@ -1486,10 +1488,10 @@
                 <input type="text" id="manual-eval-reference" placeholder="Reference timestamp (optional ISO-8601)">
                 <textarea id="manual-eval-body" placeholder="Paste email body here..."></textarea>
                 <div class="manual-eval-actions">
-                    <button class="pill-button" type="button" id="manual-eval-download-btn" onclick="downloadManualEvalIcs()" disabled>Download ICS</button>
-                    <button class="pill-button" type="button" id="manual-eval-send-self-btn" onclick="sendManualEvalIcsToSelf()" disabled>Send to my inbox</button>
-                    <button class="pill-button" type="button" onclick="closeManualEval()">Close</button>
-                    <button class="pill-button accent" id="manual-eval-run-btn" type="button" onclick="evaluateManualEmail()">Evaluate</button>
+                    <button class="pill-button" type="button" id="manual-eval-download-btn" disabled>Download ICS</button>
+                    <button class="pill-button" type="button" id="manual-eval-send-self-btn" disabled>Send to my inbox</button>
+                    <button class="pill-button" type="button" id="manual-eval-close-btn">Close</button>
+                    <button class="pill-button accent" id="manual-eval-run-btn" type="button">Evaluate</button>
                 </div>
             </div>
             <h3>Result</h3>
@@ -1508,7 +1510,66 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
+        function getCsrfToken() {
+            return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+        }
+
+        function setCsrfToken(token) {
+            if (!token) return;
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) {
+                meta.setAttribute('content', token);
+            }
+        }
+
+        async function refreshCsrfToken() {
+            try {
+                const resp = await fetch('/api/csrf-token', { cache: 'no-store' });
+                if (!resp.ok) return getCsrfToken();
+                const data = await resp.json();
+                if (data && data.csrf_token) {
+                    setCsrfToken(data.csrf_token);
+                    return data.csrf_token;
+                }
+            } catch (_) {}
+            return getCsrfToken();
+        }
+
+        async function postJsonWithCsrf(url, options = {}) {
+            const buildInit = () => {
+                const headers = Object.assign({}, options.headers || {}, {
+                    'X-CSRF-Token': getCsrfToken(),
+                });
+                return Object.assign({}, options, {
+                    method: options.method || 'POST',
+                    headers,
+                });
+            };
+            let response = await fetch(url, buildInit());
+            if (response.status === 403) {
+                try {
+                    const errBody = await response.clone().json();
+                    if (errBody && typeof errBody.error === 'string' && errBody.error.toLowerCase().includes('csrf')) {
+                        await refreshCsrfToken();
+                        response = await fetch(url, buildInit());
+                    }
+                } catch (_) {}
+            }
+            return response;
+        }
+
+        function logoutUser() {
+            postJsonWithCsrf('/logout', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                },
+            }).finally(() => {
+                window.location.href = '/login';
+            });
+        }
+
         let currentFilter = 'all';
         let dashboardConfig = {};
         let currentDetail = null;
@@ -1833,9 +1894,9 @@
                     const isManual = manualRecipients.has(addr);
                     return `
                         <label class="recipient-pill" for="recip-${idx}">
-                            <input type="checkbox" class="recipient-checkbox" id="recip-${idx}" value="${escapeHtml(addr)}" ${isChecked ? 'checked' : ''} onchange="onRecipientCheckChanged()">
+                            <input type="checkbox" class="recipient-checkbox" id="recip-${idx}" value="${escapeHtml(addr)}" ${isChecked ? 'checked' : ''}>
                             <span>${escapeHtml(addr)}</span>
-                            ${isManual ? `<button type="button" class="recipient-remove-btn" onclick="removeManualRecipient('${escapeHtml(addr)}', event)" title="Remove recipient">&times;</button>` : ''}
+                            ${isManual ? `<button type="button" class="recipient-remove-btn" data-recipient-addr="${escapeHtml(addr)}" title="Remove recipient">&times;</button>` : ''}
                         </label>
                     `;
                 }).join('');
@@ -1853,8 +1914,8 @@
 
             const addBarHtml = `
                 <div class="recipient-add-bar" style="display: flex; gap: 0.5rem; margin-top: 0.6rem; align-items: center;">
-                    <input type="email" id="new-recipient-input" placeholder="Add email address..." class="detail-editor-input" style="padding: 0.35rem 0.6rem; font-size: 0.82rem; max-width: 260px;" onkeydown="if(event.key==='Enter'){event.preventDefault();addManualRecipient();}">
-                    <button type="button" class="pill-button" id="add-recipient-btn" onclick="addManualRecipient()" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">+ Add</button>
+                    <input type="email" id="new-recipient-input" placeholder="Add email address..." class="detail-editor-input" style="padding: 0.35rem 0.6rem; font-size: 0.82rem; max-width: 260px;">
+                    <button type="button" class="pill-button" id="add-recipient-btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">+ Add</button>
                 </div>
             `;
 
@@ -1964,9 +2025,11 @@
             attachmentTogglePending = true;
             updateAttachmentToggleUI();
 
-            fetch('/api/config/attachment-parsing', {
+            postJsonWithCsrf('/api/config/attachment-parsing', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({ enabled: !current }),
             })
                 .then(async response => {
@@ -2069,9 +2132,11 @@
                 return;
             }
 
-            fetch('/api/credentials', {
+            postJsonWithCsrf('/api/credentials', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({
                     password,
                     email_address: emailAddress,
@@ -2166,22 +2231,22 @@
 
             const extraMeta = [];
             if (event.email_sender) {
-                extraMeta.push(`<span><strong>Sender</strong><br>${event.email_sender}</span>`);
+                extraMeta.push(`<span><strong>Sender</strong><br>${escapeHtml(event.email_sender)}</span>`);
             }
             if (event.email_subject) {
-                extraMeta.push(`<span><strong>Subject</strong><br>${event.email_subject}</span>`);
+                extraMeta.push(`<span><strong>Subject</strong><br>${escapeHtml(event.email_subject)}</span>`);
             }
             if (hasEvent && event.event_start) {
-                extraMeta.push(`<span><strong>Start</strong><br>${formatDate(event.event_start)}</span>`);
+                extraMeta.push(`<span><strong>Start</strong><br>${escapeHtml(formatDate(event.event_start))}</span>`);
             }
             if (hasEvent && event.event_end) {
-                extraMeta.push(`<span><strong>End</strong><br>${formatDate(event.event_end)}</span>`);
+                extraMeta.push(`<span><strong>End</strong><br>${escapeHtml(formatDate(event.event_end))}</span>`);
             }
             if (hasEvent && event.event_location) {
-                extraMeta.push(`<span><strong>Location</strong><br>${event.event_location}</span>`);
+                extraMeta.push(`<span><strong>Location</strong><br>${escapeHtml(event.event_location)}</span>`);
             }
             if (event.error) {
-                extraMeta.push(`<span><strong>Error</strong><br>${event.error}</span>`);
+                extraMeta.push(`<span><strong>Error</strong><br>${escapeHtml(event.error)}</span>`);
             }
 
             const cardTitle = isLlmError
@@ -2190,17 +2255,18 @@
             const cardDesc = isLlmError
                 ? (event.error ? `Error: ${event.error}` : 'The LLM call encountered an error or timeout during processing.')
                 : (hasEvent ? (event.event_description || 'No description provided.') : 'The LLM did not detect a calendar-worthy event.');
+            const safeEmailId = escapeHtml(event.email_id || '');
 
             return `
-                <article class="event-card ${isLlmError ? 'event-card--warn' : (hasEvent ? 'event-card--invite' : 'event-card--info')}" onclick="openEventDetails('${event.email_id || ''}')">
-                    <h3>${cardTitle}</h3>
-                    <p>${cardDesc}</p>
-                    <span class="status-tag ${statusClass}">${statusLabel}</span>
+                <article class="event-card ${isLlmError ? 'event-card--warn' : (hasEvent ? 'event-card--invite' : 'event-card--info')}" data-email-id="${safeEmailId}">
+                    <h3>${escapeHtml(cardTitle)}</h3>
+                    <p>${escapeHtml(cardDesc)}</p>
+                    <span class="status-tag ${escapeHtml(statusClass)}">${escapeHtml(statusLabel)}</span>
                     ${promptInjection ? '<span class="status-tag info">Prompt injection flagged</span>' : ''}
                     <div class="event-meta">${extraMeta.join('')}</div>
                     <div class="card-actions">
-                        <button class="pill-button" onclick="event.stopPropagation(); openEventDetails('${event.email_id || ''}')">Details</button>
-                        ${pendingApproval ? `<button class="pill-button accent" onclick="event.stopPropagation(); openEventDetails('${event.email_id || ''}', true)">Review & Decide</button>` : ''}
+                        <button class="pill-button" type="button" data-action="open-details" data-email-id="${safeEmailId}">Details</button>
+                        ${pendingApproval ? `<button class="pill-button accent" type="button" data-action="review-details" data-email-id="${safeEmailId}" data-focus="true">Review &amp; Decide</button>` : ''}
                     </div>
                 </article>
             `;
@@ -2558,7 +2624,7 @@
                 if (!isCurrentMonth) classes.push('is-other-month');
                 if (isTodayDate) classes.push('is-today');
 
-                html += `<div class="${classes.join(' ')}" onclick="switchToWeekForDate(new Date(${cellDate.getTime()}))" title="Click to view week of ${cellDate.toLocaleDateString()}">`;
+                html += `<div class="${classes.join(' ')}" data-week-date-ms="${cellDate.getTime()}" title="Click to view week of ${escapeHtml(cellDate.toLocaleDateString())}">`;
                 html += `  <div class="cal-cell-header">`;
                 html += `    <span class="cal-day-num">${cellDate.getDate()}</span>`;
                 if (cellEvents.length > 0) {
@@ -2574,14 +2640,14 @@
                     const statusClass = getEventStatusClass(ev);
                     const durationStr = formatDuration(ev.start, ev.end);
                     const tooltip = `${ev.title} (${durationStr})\n${formatShortDateTime(ev.start)} – ${formatShortDateTime(ev.end)}${ev.location ? '\n📍 ' + ev.location : ''}\nFrom: ${ev.email_sender || '—'}`;
-                    html += `    <div class="cal-event-pill ${statusClass}" title="${escapeHtml(tooltip)}" onclick="event.stopPropagation(); openEventDetails('${escapeHtml(ev.email_id || '')}', ${ev.pending})">`;
+                    html += `    <div class="cal-event-pill ${statusClass}" title="${escapeHtml(tooltip)}" data-email-id="${escapeHtml(ev.email_id || '')}" data-pending="${ev.pending ? 'true' : 'false'}">`;
                     html += `      <span class="pill-time">${escapeHtml(timeStr)}</span>`;
                     html += `      <span class="pill-title">${escapeHtml(ev.title)}</span>`;
                     html += `    </div>`;
                 }
                 if (cellEvents.length > maxDisplay) {
                     const overflow = cellEvents.length - maxDisplay;
-                    html += `    <div class="cal-more-badge" onclick="event.stopPropagation(); switchToWeekForDate(new Date(${cellDate.getTime()}))">+${overflow} more (week)</div>`;
+                    html += `    <div class="cal-more-badge" data-week-date-ms="${cellDate.getTime()}">+${overflow} more (week)</div>`;
                 }
                 html += `  </div>`;
                 html += `</div>`;
@@ -2708,7 +2774,7 @@
                     html += `      <div class="cal-week-event-card ${statusClass}" `;
                     html += `           style="top: ${item.top}px; height: ${item.height}px; width: calc(${widthPct}% - 4px); left: calc(${leftPct}% + 2px);" `;
                     html += `           title="${escapeHtml(tooltip)}" `;
-                    html += `           onclick="event.stopPropagation(); openEventDetails('${escapeHtml(ev.email_id || '')}', ${ev.pending})">`;
+                    html += `           data-email-id="${escapeHtml(ev.email_id || '')}" data-pending="${ev.pending ? 'true' : 'false'}">`;
                     html += `        <div class="cal-week-event-header">`;
                     html += `          <span class="cal-week-event-time">${escapeHtml(timeRange)}</span>`;
                     if (durationText) {
@@ -2790,7 +2856,9 @@
                 return;
             }
             censoring = true;
-            fetch('/api/database/censor', { method: 'POST' })
+            postJsonWithCsrf('/api/database/censor', {
+                method: 'POST',
+            })
                 .then(async response => {
                     const payload = await response.json();
                     if (!response.ok) {
@@ -2819,7 +2887,9 @@
                 return;
             }
             purging = true;
-            fetch('/api/database/purge', { method: 'POST' })
+            postJsonWithCsrf('/api/database/purge', {
+                method: 'POST',
+            })
                 .then(async response => {
                     const payload = await response.json();
                     if (!response.ok) {
@@ -2852,7 +2922,9 @@
                 manualBtn.disabled = true;
                 manualBtn.textContent = 'Checking...';
             }
-            fetch('/api/check-now', { method: 'POST' })
+            postJsonWithCsrf('/api/check-now', {
+                method: 'POST',
+            })
                 .then(async response => {
                     const payload = await response.json();
                     if (!response.ok) {
@@ -2949,9 +3021,11 @@
                 ? manualEvalResult.events[0]
                 : null;
 
-            fetch('/api/manual-evaluate/send-self', {
+            postJsonWithCsrf('/api/manual-evaluate/send-self', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({
                     subject: manualEvalResult.subject || '(Manual evaluation)',
                     ics_content: manualEvalResult.ics_content,
@@ -3056,9 +3130,11 @@
                 runBtn.textContent = 'Evaluating...';
             }
 
-            fetch('/api/manual-evaluate', {
+            postJsonWithCsrf('/api/manual-evaluate', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({
                     subject,
                     body,
@@ -3278,9 +3354,11 @@
                 approveBtn.disabled = true;
                 approveBtn.classList.add('loading');
             }
-            fetch(`/api/events/${encodeURIComponent(emailId)}/approve`, {
+            postJsonWithCsrf(`/api/events/${encodeURIComponent(emailId)}/approve`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body,
             })
                 .then(async response => {
@@ -3318,9 +3396,11 @@
 
         function declineEvent(emailId, payload = {}) {
             const body = cleanDecisionPayload(payload);
-            fetch(`/api/events/${encodeURIComponent(emailId)}/decline`, {
+            postJsonWithCsrf(`/api/events/${encodeURIComponent(emailId)}/decline`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body,
             })
                 .then(async response => {
@@ -3389,9 +3469,11 @@
                     .filter(cb => cb.checked)
                     .map(cb => cb.value);
 
-                fetch(`/api/events/${encodeURIComponent(currentDetail.email_id)}/preview-ics`, {
+                postJsonWithCsrf(`/api/events/${encodeURIComponent(currentDetail.email_id)}/preview-ics`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
                     body: JSON.stringify({
                         selected_event_index: selectedIndex,
                         event_overrides: overrides,
@@ -3418,9 +3500,11 @@
                 btn.classList.add('loading');
                 btn.textContent = doubleCheck ? 'Auditing & Rescanning...' : 'Rescanning...';
             }
-            fetch(`/api/events/${encodeURIComponent(currentDetail.email_id)}/rescan`, {
+            postJsonWithCsrf(`/api/events/${encodeURIComponent(currentDetail.email_id)}/rescan`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({ double_check: doubleCheck, hint: hintVal }),
             })
             .then(async response => {
@@ -3538,12 +3622,115 @@
 
         function bootstrap() {
             updateViewModeUI();
+            refreshCsrfToken();
             loadConfig();
             loadCredentialStatus();
             if (credentialsConfigured) {
                 loadStats();
                 loadEvents();
             }
+        }
+
+        window.addEventListener('pageshow', (e) => {
+            if (e.persisted) {
+                refreshCsrfToken();
+            }
+        });
+
+        // Static and delegated event bindings (CSP nonce-compatible; zero inline handlers)
+        document.getElementById('logout-btn')?.addEventListener('click', logoutUser);
+        document.getElementById('credential-change-btn')?.addEventListener('click', () => toggleCredentialForm(true));
+        document.getElementById('credentials-form')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            submitCredentials();
+        });
+        document.getElementById('view-mode-calendar')?.addEventListener('click', () => setViewMode('calendar'));
+        document.getElementById('view-mode-list')?.addEventListener('click', () => setViewMode('list'));
+        document.getElementById('manual-check-btn')?.addEventListener('click', triggerManualCheck);
+        document.getElementById('manual-eval-open-btn')?.addEventListener('click', openManualEval);
+        document.getElementById('attachment-toggle-btn')?.addEventListener('click', toggleAttachmentParsing);
+        document.getElementById('censor-db-btn')?.addEventListener('click', censorDatabase);
+        document.getElementById('purge-db-btn')?.addEventListener('click', purgeOldEntries);
+        document.getElementById('cal-prev-btn')?.addEventListener('click', () => navigateCalendar(-1));
+        document.getElementById('cal-today-btn')?.addEventListener('click', navigateCalendarToday);
+        document.getElementById('cal-next-btn')?.addEventListener('click', () => navigateCalendar(1));
+        document.getElementById('subview-month-btn')?.addEventListener('click', () => setCalendarSubView('month'));
+        document.getElementById('subview-week-btn')?.addEventListener('click', () => setCalendarSubView('week'));
+        document.getElementById('details-close-x')?.addEventListener('click', closeDetails);
+        document.getElementById('details-close-btn')?.addEventListener('click', closeDetails);
+        document.getElementById('detail-rescan-btn')?.addEventListener('click', rescanCurrentEmail);
+        document.getElementById('detail-decline-btn')?.addEventListener('click', declineCurrentEvent);
+        document.getElementById('detail-approve-btn')?.addEventListener('click', approveCurrentEvent);
+        document.getElementById('manual-eval-close-x')?.addEventListener('click', closeManualEval);
+        document.getElementById('manual-eval-close-btn')?.addEventListener('click', closeManualEval);
+        document.getElementById('manual-eval-download-btn')?.addEventListener('click', downloadManualEvalIcs);
+        document.getElementById('manual-eval-send-self-btn')?.addEventListener('click', sendManualEvalIcsToSelf);
+        document.getElementById('manual-eval-run-btn')?.addEventListener('click', evaluateManualEmail);
+
+        // Delegated listeners for dynamically rendered lists, calendar grids, and recipients
+        document.getElementById('events-list')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-action][data-email-id]');
+            if (btn) {
+                e.stopPropagation();
+                openEventDetails(btn.dataset.emailId, btn.dataset.focus === 'true');
+                return;
+            }
+            const card = e.target.closest('article.event-card[data-email-id]');
+            if (card && card.dataset.emailId) {
+                openEventDetails(card.dataset.emailId);
+            }
+        });
+
+        document.getElementById('calendar-month-view')?.addEventListener('click', (e) => {
+            const pill = e.target.closest('.cal-event-pill[data-email-id]');
+            if (pill && pill.dataset.emailId) {
+                e.stopPropagation();
+                openEventDetails(pill.dataset.emailId, pill.dataset.pending === 'true');
+                return;
+            }
+            const more = e.target.closest('.cal-more-badge[data-week-date-ms]');
+            if (more) {
+                e.stopPropagation();
+                switchToWeekForDate(new Date(Number(more.dataset.weekDateMs)));
+                return;
+            }
+            const cell = e.target.closest('.cal-month-cell[data-week-date-ms]');
+            if (cell) {
+                switchToWeekForDate(new Date(Number(cell.dataset.weekDateMs)));
+            }
+        });
+
+        document.getElementById('calendar-week-view')?.addEventListener('click', (e) => {
+            const card = e.target.closest('.cal-week-event-card[data-email-id]');
+            if (card && card.dataset.emailId) {
+                e.stopPropagation();
+                openEventDetails(card.dataset.emailId, card.dataset.pending === 'true');
+            }
+        });
+
+        const recipientPickerEl = document.getElementById('recipient-picker');
+        if (recipientPickerEl) {
+            recipientPickerEl.addEventListener('change', (e) => {
+                if (e.target.classList.contains('recipient-checkbox')) {
+                    onRecipientCheckChanged();
+                }
+            });
+            recipientPickerEl.addEventListener('click', (e) => {
+                const removeBtn = e.target.closest('.recipient-remove-btn[data-recipient-addr]');
+                if (removeBtn) {
+                    removeManualRecipient(removeBtn.dataset.recipientAddr, e);
+                    return;
+                }
+                if (e.target.closest('#add-recipient-btn')) {
+                    addManualRecipient();
+                }
+            });
+            recipientPickerEl.addEventListener('keydown', (e) => {
+                if (e.target.id === 'new-recipient-input' && e.key === 'Enter') {
+                    e.preventDefault();
+                    addManualRecipient();
+                }
+            });
         }
 
         // Close modals when clicking backdrop (next to the modal content dialog)
@@ -3564,24 +3751,6 @@
                 }
             });
         }
-
-        // Explicit event listeners for modal close buttons
-        document.querySelectorAll('#details-modal .close-btn, #details-modal button.pill-button').forEach(btn => {
-            if (btn.textContent.trim() === 'Close' || btn.classList.contains('close-btn')) {
-                btn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    closeDetails();
-                });
-            }
-        });
-        document.querySelectorAll('#manual-eval-modal .close-btn, #manual-eval-modal button.pill-button').forEach(btn => {
-            if (btn.textContent.trim() === 'Close' || btn.classList.contains('close-btn')) {
-                btn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    closeManualEval();
-                });
-            }
-        });
 
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {

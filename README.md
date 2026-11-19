@@ -34,8 +34,7 @@ An intelligent bot that monitors your email inbox, uses a local LLM to detect ev
 
 3. **Set up Ollama** (if not already installed):
    ```bash
-   # Install Ollama
-   curl -fsSL https://ollama.ai/install.sh | sh
+   # Install Ollama via your OS package manager or verify the download at https://ollama.com/download
    
    # Pull a model (e.g., llama3.2)
    ollama pull llama3.2
@@ -48,7 +47,12 @@ An intelligent bot that monitors your email inbox, uses a local LLM to detect ev
 
 ### Option 1: Environment Variables (Recommended)
 
-Create a `.env` file in the project directory:
+Create a `.env` file in the project directory (and restrict its permissions to owner-only):
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
 
 ```bash
 # Email Configuration
@@ -61,6 +65,9 @@ IMAP_PORT=993
 SMTP_SERVER=smtp.gmail.com
 SMTP_PORT=587
 
+# Exchange Autodiscover (keep false unless temporarily discovering on a trusted network)
+EXCHANGE_AUTODISCOVER=false
+
 # LLM Configuration
 LLM_ENDPOINT=http://localhost:11434/api/generate
 LLM_MODEL=llama3.2
@@ -70,6 +77,7 @@ ATTACHMENT_MAX_FILES_PER_EMAIL=5
 ATTACHMENT_MAX_FILE_SIZE_BYTES=5242880
 ATTACHMENT_MAX_TEXT_CHARS=12000
 ATTACHMENT_MAX_PDF_PAGES=20
+ATTACHMENT_MAX_UNCOMPRESSED_BYTES=10485760  # Cap decompressed DOCX XML against zip bombs
 
 # Optional Settings
 CHECK_INTERVAL_SECONDS=300
@@ -88,11 +96,16 @@ EXCHANGE_SEND_CONFIRMATION_EMAIL=false   # Optional confirmation email to thread
 CALENDAR_ITEM_CATEGORY="iCal-Bot"        # Category badge in Outlook
 
 RESULTS_DB_PATH=data/processed_results.db
-AUTO_APPROVE_EVENTS=false  # Set to true to skip UI approval
+AUTO_APPROVE_EVENTS=false                  # Set to true to skip UI approval (bypassed on prompt injection/external recipients)
+AUTO_APPROVE_ALLOW_EXTERNAL_RECIPIENTS=false # Require manual review for external recipients even when AUTO_APPROVE_EVENTS=true
+ENFORCE_INTERNAL_RECIPIENT_DOMAIN=false    # When true, drop outbound recipients outside INTERNAL_EMAIL_DOMAIN
 ENABLE_DEBUG_DUMPS=false   # Set true to persist outbound .eml and LLM debug artifacts
 LLM_DEBUG_DIR=             # Path for LLM debug dumps (ignored unless ENABLE_DEBUG_DUMPS=true)
 REQUIRE_HTTPS_FOR_REMOTE=true
 REQUIRE_HTTPS_FOR_LLM=true
+TRUSTED_PROXY_COUNT=0      # Set >0 only when running behind a trusted reverse proxy (e.g., 1 for nginx)
+SESSION_COOKIE_SECURE=false # Set true when always served over HTTPS (also auto-enabled per-request on HTTPS)
+SESSION_LIFETIME_HOURS=12  # Session idle/max lifetime in hours
 ```
 
 ### Option 2: Edit config.py directly
@@ -168,23 +181,25 @@ python web_ui.py
 ```
 
 - Navigate to `http://127.0.0.1:5000` to see the live feed
-- Click any record to inspect the full email body, LLM prompt/response, and ICS payload
+- Click any record to inspect the redacted LLM prompt/response, extracted event candidates, and ICS payload
 - Required approvals (default) appear under the “Pending approvals” count and can be sent with a single click
-- Set `AUTO_APPROVE_EVENTS=true` in `.env` if you prefer the bot to send invites immediately without UI approval
+- Set `AUTO_APPROVE_EVENTS=true` in `.env` if you prefer the bot to send invites automatically for trusted internal emails without UI approval (entries flagged for prompt injection or containing external recipients still require manual approval unless `AUTO_APPROVE_ALLOW_EXTERNAL_RECIPIENTS=true`)
 - Attachment text extraction is enabled by default and can be turned on/off in the dashboard via the “Attachments: ON/OFF” control
 
 **Local UI authentication**
-- On first run from localhost, open `/setup` to create your UI username and password.
-- `/setup` is local-only; after setup, sign in via `/login`. Password managers can save this login.
+- On first run from localhost, open `/setup` to create your UI username and password (**minimum 12 characters**).
+- `/setup` is local-only; after setup, sign in via `/login` (rate-limited to 5 failed attempts per 15 minutes per IP) and use **Sign out** (`POST /logout`) to end your session. Password managers can save this login.
 
 **Mailbox credentials via UI**
-- If EMAIL_PASSWORD is not set, the UI prompts you to enter the mailbox password once. It is kept in memory only.
+- If `EMAIL_PASSWORD` is not set, the UI prompts you to enter the mailbox password once via a CSRF-protected JSON request. It is kept in memory only.
 
-**Prompt-injection warning**
-- Entries flagged as potential prompt injection are marked in the UI; review those emails carefully.
+**Prompt-injection & recipient guardrails**
+- Entries flagged as potential prompt injection (across subject, body, and boundary tag spoofing) are marked in the UI and automatically bypass `AUTO_APPROVE_EVENTS` to require manual review.
+- Set `ENFORCE_INTERNAL_RECIPIENT_DOMAIN=true` to strictly drop outbound recipients outside `INTERNAL_EMAIL_DOMAIN`.
 
-**Data minimization**
-- On startup the app censors sensitive fields and purges entries older than 1 month. Manual purge deletes entries older than 1 week.
+**Data minimization & privacy**
+- Email bodies are never stored in `email_body` and are redacted from `llm_prompt` before persistence.
+- On startup the app runs a redaction pass (`censor_sensitive_fields()`, including SQLite `VACUUM` to wipe freed pages) and purges entries older than 1 month. Manual purge deletes entries older than 1 week.
 
 **Custom local hostname (password manager-friendly):**
 If your password manager ignores ports for localhost, map a custom hostname to 127.0.0.1 and use it in the browser.
@@ -310,11 +325,15 @@ Tweak the `build_reply_message` helper in `messaging.py` to change disclaimers o
 
 ## Security Notes
 
-- Never commit `.env` file or credentials to version control
+- Never commit `.env` file or credentials to version control, and keep `.env`, `processed_emails.json`, and `data/` owner-only (`chmod 700 data && chmod 600 .env data/*`)
 - Never commit runtime files in `data/` (auth store/secret, SQLite DB, temp credentials)
 - Use app-specific passwords, not your main email password
-- Keep your LLM local to maintain privacy
-- Attachment extraction is limited to bounded, text-safe formats (`.txt`, `.md`, `.csv`, `.log`, `.pdf`, `.docx`) and can be disabled in the UI
+- Keep your LLM local to maintain privacy; non-local LLM endpoints must use HTTPS (`REQUIRE_HTTPS_FOR_LLM=true`)
+- IMAP/SMTP connections enforce TLS 1.2+ with certificate and hostname verification; Exchange Autodiscover is disabled by default (`EXCHANGE_AUTODISCOVER=false`) to avoid credential exposure on untrusted networks
+- Web UI enforces per-session CSRF tokens, same-origin checks, nonce-based CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `HttpOnly`/`SameSite=Lax` cookies (plus `Secure` on HTTPS), 1 MiB max request size, and 12-hour session lifetimes
+- Keep `TRUSTED_PROXY_COUNT=0` unless deployed behind a trusted reverse proxy so `X-Forwarded-Proto` cannot be spoofed
+- Attachment extraction is limited to bounded, text-safe formats (`.txt`, `.md`, `.csv`, `.log`, `.pdf`, `.docx`) using `defusedxml` and uncompressed XML size caps (`ATTACHMENT_MAX_UNCOMPRESSED_BYTES`) against zip bombs, and can be disabled in the UI
+- The systemd unit (`ical-bot.service`) enforces `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, and `UMask=0077`
 
 ## Background Service & Opportunistic Execution
 
@@ -373,16 +392,16 @@ WORKLOAD_COOLDOWN_SECONDS=300
 
 ## Deployment (Docker + reverse proxy)
 
-1. Copy `.env.example` to `.env` and set real values. Keep `ENABLE_DEBUG_DUMPS=false` in production.
+1. Copy `.env.example` to `.env`, set `chmod 600 .env`, and fill in real values. Keep `ENABLE_DEBUG_DUMPS=false` in production.
 2. Build and run via Docker Compose:
    ```bash
    docker compose build
    docker compose up -d
    ```
-   The app listens on `app:5000`; the bundled nginx proxy forwards port 80 to the app. Add TLS by mounting certs and enabling the 443 block in `deploy/nginx.conf`.
-3. Ollama access: when using Docker, point `LLM_ENDPOINT` to `http://host.docker.internal:11434` (compose already sets this) or to another reachable host/IP.
-4. Auth: on first run, open `/setup` from localhost to create your UI login, then continue with `/login`.
-5. File permissions: restrict `data/` and the SQLite DB to the service user; do not bake secrets into images.
+   The container runs Flask under single-worker Gunicorn (`app:5000`, single worker preserves in-memory mailbox credentials); `docker-compose.yml` sets `TRUSTED_PROXY_COUNT=1` so the bundled nginx reverse proxy's `X-Forwarded-Proto` is trusted. Enable TLS and mount certs in `deploy/nginx.conf` (which also enforces `client_max_body_size 1m`, security headers, and `/login` rate limiting) before exposing remotely.
+3. Ollama access: when using Docker, set `LLM_ENDPOINT` to `https://<host>/api/generate` (or `http://host.docker.internal:11434/api/generate` with `REQUIRE_HTTPS_FOR_LLM=false` only on an isolated local host bridge).
+4. Auth: on first run, open `/setup` from localhost to create your UI login (minimum 12 characters), then continue with `/login`.
+5. File permissions: restrict `data/` (`0700`) and the SQLite DB/auth files (`0600`) to the service user; do not bake secrets into images.
 
 ## Limitations
 

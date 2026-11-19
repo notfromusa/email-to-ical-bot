@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -20,9 +21,23 @@ class StorageManager:
     """Lightweight helper around SQLite for storing processed email results."""
 
     def __init__(self, db_path: str):
+        """Initialize SQLite storage and tighten directory/database permissions.
+
+        Args:
+            db_path: Path to the SQLite database file.
+        """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.db_path.parent, 0o700)
+        except OSError:
+            pass
         self._initialize()
+        if self.db_path.exists():
+            try:
+                os.chmod(self.db_path, 0o600)
+            except OSError:
+                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -598,6 +613,13 @@ class StorageManager:
                     stats["records_updated"] += 1
 
             conn.commit()
+        conn.close()
+
+        if stats["records_updated"] > 0:
+            try:
+                self._vacuum()
+            except Exception:
+                pass
 
         return stats
 
@@ -752,9 +774,25 @@ class StorageManager:
                     [(email_id,) for email_id in removable_ids],
                 )
                 conn.commit()
+            conn.close()
             stats["records_deleted"] = len(removable_ids)
+            try:
+                self._vacuum()
+            except Exception:
+                pass
 
         return stats
+
+    def _vacuum(self) -> None:
+        """Compact the SQLite database file to remove freed pages containing redacted text."""
+        if str(self.db_path) == ":memory:" or not self.db_path.exists():
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.isolation_level = None
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
 
     def _archive_email_ids(self, email_ids: List[str]) -> None:
         if not email_ids:
@@ -812,19 +850,58 @@ class StorageManager:
 
     @staticmethod
     def _redact_prompt_body(prompt: Optional[str]) -> Optional[str]:
-        if not prompt or "Email Body:" not in prompt:
+        """Redact untrusted email body content from stored LLM prompts.
+
+        Supports both current `<BEGIN_EMAIL>...</END_EMAIL>` delimited prompts and
+        legacy `Email Body:` / `Email Body (untrusted):` prompts, using reverse
+        search (`rfind`) for closing markers so embedded markers in untrusted body
+        content cannot bypass redaction.
+
+        Args:
+            prompt: Stored LLM prompt text or None.
+
+        Returns:
+            Prompt text with the email body replaced by `[REDACTED]`, or original
+            value if empty or no body marker was present.
+        """
+        if not prompt:
             return prompt
-        marker = "Email Body:"
-        start_idx = prompt.find(marker)
-        task_idx = prompt.find("\n\nTask:", start_idx)
-        if start_idx == -1 or task_idx == -1:
-            return prompt
-        prefix = prompt[: start_idx + len(marker)]
-        suffix = prompt[task_idx:]
-        redacted_body = "\n[REDACTED]"
-        if not suffix.startswith("\n"):
-            suffix = "\n" + suffix
-        return f"{prefix}{redacted_body}{suffix}"
+
+        begin_marker = "<BEGIN_EMAIL>"
+        end_marker = "<END_EMAIL>"
+        begin_idx = prompt.find(begin_marker)
+        if begin_idx != -1:
+            end_idx = prompt.rfind(end_marker, begin_idx + len(begin_marker))
+            if end_idx != -1:
+                prefix = prompt[: begin_idx + len(begin_marker)]
+                suffix = prompt[end_idx:]
+                return f"{prefix}\n[REDACTED]\n{suffix}"
+
+        for marker in ("Email Body (untrusted):", "Email Body:"):
+            start_idx = prompt.find(marker)
+            if start_idx == -1:
+                continue
+            search_from = start_idx + len(marker)
+            end_idx = -1
+            for boundary in (
+                "\n\nTask:",
+                "\n\nInitial Extraction:",
+                "\n\nVerification Instructions:",
+                "\n\nRespond with ONLY",
+            ):
+                candidate_idx = prompt.rfind(boundary, search_from)
+                if candidate_idx != -1:
+                    end_idx = candidate_idx
+                    break
+            if end_idx == -1:
+                continue
+            prefix = prompt[:search_from]
+            suffix = prompt[end_idx:]
+            if not suffix.startswith("\n"):
+                suffix = "\n" + suffix
+            return f"{prefix}\n[REDACTED]{suffix}"
+
+        return prompt
 
     @staticmethod
     def _strip_context_payload(raw_value: Optional[Any]) -> Optional[Any]:

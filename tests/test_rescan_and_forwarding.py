@@ -316,6 +316,8 @@ class TestWebUIRescanEndpoint:
         }
 
         with app.test_client() as test_client:
+            with test_client.session_transaction() as sess:
+                sess["csrf_token"] = "test-csrf-token"
             with patch("config.EMAIL_PROTOCOL", "IMAP"), \
                  patch("web_ui._check_auth", return_value=True), \
                  patch("web_ui._credentials_ready", return_value=True), \
@@ -325,6 +327,7 @@ class TestWebUIRescanEndpoint:
                 resp = test_client.post(
                     f"/api/events/{test_email_id}/rescan",
                     json={"double_check": True, "hint": "Look for doctorate talk"},
+                    headers={"X-CSRF-Token": "test-csrf-token"},
                 )
 
                 assert resp.status_code == 200
@@ -374,6 +377,8 @@ class TestWebUIRescanEndpoint:
         }
 
         with app.test_client() as test_client:
+            with test_client.session_transaction() as sess:
+                sess["csrf_token"] = "test-csrf-token"
             with patch("config.EMAIL_PROTOCOL", "IMAP"), \
                  patch("web_ui._check_auth", return_value=True), \
                  patch("web_ui._credentials_ready", return_value=True), \
@@ -383,6 +388,7 @@ class TestWebUIRescanEndpoint:
                 resp = test_client.post(
                     f"/api/events/{test_email_id}/rescan",
                     json={"double_check": True},
+                    headers={"X-CSRF-Token": "test-csrf-token"},
                 )
 
                 assert resp.status_code == 200

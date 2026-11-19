@@ -33,9 +33,11 @@ StandardError=journal
 SyslogIdentifier=ical-bot
 
 # Security settings
-ProtectSystem=false
-PrivateTmp=false
-NoNewPrivileges=false
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/data/workspace/iCal_bot_git
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

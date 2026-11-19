@@ -15,7 +15,7 @@ EXCHANGE_SERVER=outlook.office365.com
 EXCHANGE_VERSION=Office365
 EXCHANGE_EMAIL=your-email@example.com
 EXCHANGE_USERNAME=
-EXCHANGE_AUTODISCOVER=true
+EXCHANGE_AUTODISCOVER=false
 
 # Exchange Direct Calendar Configuration (Option A: native Outlook editability)
 EXCHANGE_DIRECT_CALENDAR_CREATION=true
@@ -77,12 +77,11 @@ EXCHANGE_AUTODISCOVER=false
 
 ## Autodiscover
 
-**Recommended**: set `EXCHANGE_AUTODISCOVER=true`.
+**Recommended (Security)**: set `EXCHANGE_AUTODISCOVER=false` and configure `EXCHANGE_SERVER` explicitly.
 
-Only disable it if:
-- You have a fixed Exchange server hostname
-- Autodiscover is blocked by network policy
-- You already confirmed manual server settings with your admin
+Why: EWS Autodiscover probes unauthenticated HTTP endpoints (`http://autodiscover.<domain>/autodiscover/autodiscover.xml`) and follows `302` redirects before submitting credentials. On untrusted or shared networks, DNS/HTTP spoofing can redirect authentication requests to a rogue HTTPS endpoint and leak Exchange credentials.
+
+Only enable `EXCHANGE_AUTODISCOVER=true` temporarily on a trusted network to discover your Exchange hostname, then pin `EXCHANGE_SERVER` and switch `EXCHANGE_AUTODISCOVER=false`.
 
 ## Troubleshooting
 

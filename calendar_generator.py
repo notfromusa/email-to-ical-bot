@@ -4,6 +4,7 @@ Calendar invite generator for creating iCalendar (.ics) files
 
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
+import re
 import uuid
 import logging
 
@@ -40,6 +41,20 @@ class CalendarGenerator:
             logger.warning("Unknown timezone '%s', falling back to UTC", timezone_name)
             return timezone.utc
         
+    @staticmethod
+    def _sanitize_header_value(text: Optional[str]) -> str:
+        """Strip CR, LF, and NUL control characters from iCalendar property values."""
+        if not text:
+            return ""
+        return re.sub(r"[\r\n\x00]+", "", str(text)).strip()
+
+    @staticmethod
+    def _sanitize_param_value(text: Optional[str]) -> str:
+        """Sanitize an iCalendar parameter value (RFC 5545 Section 3.2) to prevent injection."""
+        if not text:
+            return ""
+        return re.sub(r'[\r\n\x00";:]+', " ", str(text)).strip()
+
     def create_ics_invite(self, event_data: Dict, recipients: Optional[Iterable[str]] = None) -> str:
         """
         Create an iCalendar (.ics) file content from event data
@@ -57,7 +72,7 @@ class CalendarGenerator:
         """
         try:
             # Use stable event UID if provided (e.g. for updates/resends), otherwise generate fresh UUID (RFC 5545 Section 3.8.4.7)
-            event_uid = (event_data.get('uid') or '').strip() or str(uuid.uuid4())
+            event_uid = self._sanitize_header_value(event_data.get('uid')) or str(uuid.uuid4())
             sequence = int(event_data.get('sequence', 0))
             
             # Parse datetime strings
@@ -82,6 +97,8 @@ class CalendarGenerator:
                     else:
                         organizer_email = "organizer-bot@example.com"
 
+            safe_organizer_name = self._sanitize_param_value(self.organizer_name) or "iCal Bot"
+            safe_organizer_email = self._sanitize_header_value(organizer_email)
             attendee_lines = self._build_attendee_lines(normalized_recipients)
 
             ics_content = [
@@ -108,7 +125,7 @@ class CalendarGenerator:
             
             # Add organizer and sequence
             ics_content.extend([
-                f"ORGANIZER;CN={self.organizer_name}:mailto:{organizer_email}",
+                f"ORGANIZER;CN={safe_organizer_name}:mailto:{safe_organizer_email}",
                 "STATUS:CONFIRMED",
                 f"SEQUENCE:{sequence}",
                 "END:VEVENT",
@@ -258,21 +275,25 @@ class CalendarGenerator:
         return start_dt.astimezone(timezone.utc) >= now_utc
 
     def _build_attendee_lines(self, recipients: Optional[Iterable[str]]) -> List[str]:
+        """Format RFC 5545 ATTENDEE lines with sanitized CN parameters and mailto values."""
         lines: List[str] = []
         for email in self._normalize_recipient_list(recipients):
-            cn = self._escape_text(self._guess_display_name(email))
-            email_value = self._escape_text(email)
+            cn = self._sanitize_param_value(self._escape_text(self._guess_display_name(email)))
+            email_value = self._sanitize_header_value(self._escape_text(email))
+            if not email_value:
+                continue
             lines.append(
                 f"ATTENDEE;CN={cn};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{email_value}"
             )
         return lines
 
     def _normalize_recipient_list(self, recipients: Optional[Iterable[str]]) -> List[str]:
+        """Deduplicate and strip CR/LF/NUL control characters from recipient addresses."""
         unique: List[str] = []
         if not recipients:
             return unique
         for raw in recipients:
-            addr = (raw or '').strip()
+            addr = self._sanitize_header_value(raw)
             if not addr:
                 continue
             if addr not in unique:
