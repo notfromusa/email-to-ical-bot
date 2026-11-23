@@ -1,7 +1,7 @@
 """Helpers for composing user-facing reply messages."""
 
 import re
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional
 
 import config
 

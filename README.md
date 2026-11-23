@@ -15,11 +15,11 @@ An intelligent bot that monitors your email inbox, uses a local LLM to detect ev
 
 ## Prerequisites
 
-1. **Python 3.8+**
+1. **Python 3.11+** (managed with `uv`)
 2. **Ollama** - A local LLM server
    - Install from: https://ollama.ai/
    - Pull a model: `ollama pull gpt-oss:20b` (or any other model)
-3. **Email Account** with IMAP/SMTP access
+3. **Email Account** with IMAP/SMTP or Exchange (EWS) access
    - For Gmail: Enable "App Passwords" in your Google Account settings
    - For other providers: Check their IMAP/SMTP documentation
 
@@ -27,9 +27,9 @@ An intelligent bot that monitors your email inbox, uses a local LLM to detect ev
 
 1. **Clone or download this repository**
 
-2. **Install Python dependencies** (pyproject-based):
+2. **Install Python dependencies** (`pyproject.toml` + `uv`):
    ```bash
-   pip install -e .
+   uv sync
    ```
 
 3. **Set up Ollama** (if not already installed):
@@ -69,9 +69,11 @@ SMTP_PORT=587
 EXCHANGE_AUTODISCOVER=false
 
 # LLM Configuration
-LLM_ENDPOINT=http://localhost:11434/api/generate
+LLM_ENDPOINT=http://localhost:11434/api/chat
 LLM_MODEL=llama3.2
-LLM_MAX_EVENTS_PER_EMAIL=5  # Keep top N event candidates per email
+LLM_MAX_EVENTS_PER_EMAIL=5       # Keep top N event candidates per email
+LLM_DEFAULT_DURATION_MINUTES=60  # Fallback duration when end time is unspecified
+# LLM_DURATION_RULES_JSON=[]     # Optional custom JSON duration keyword rules
 ATTACHMENT_PARSING_ENABLED=true
 ATTACHMENT_MAX_FILES_PER_EMAIL=5
 ATTACHMENT_MAX_FILE_SIZE_BYTES=5242880
@@ -197,9 +199,10 @@ python web_ui.py
 - Entries flagged as potential prompt injection (across subject, body, and boundary tag spoofing) are marked in the UI and automatically bypass `AUTO_APPROVE_EVENTS` to require manual review.
 - Set `ENFORCE_INTERNAL_RECIPIENT_DOMAIN=true` to strictly drop outbound recipients outside `INTERNAL_EMAIL_DOMAIN`.
 
-**Data minimization & privacy**
+**Data minimization & unified SQLite persistence**
 - Email bodies are never stored in `email_body` and are redacted from `llm_prompt` before persistence.
-- On startup the app runs a redaction pass (`censor_sensitive_fields()`, including SQLite `VACUUM` to wipe freed pages) and purges entries older than 1 month. Manual purge deletes entries older than 1 week.
+- All processed email state, results, approval logs, and IMAP `UIDVALIDITY`/high-water UID watermarks live in SQLite (`data/processed_results.db` using WAL journal mode, secondary indexes, and 5-second `busy_timeout`). Legacy `processed_emails.json` IDs are imported automatically once on startup and left untouched.
+- On startup the app runs a redaction pass (`censor_sensitive_fields()`, including SQLite WAL checkpoint + `VACUUM` to wipe freed pages) and purges entries older than 1 month. Manual purge deletes entries older than 1 week.
 
 **Custom local hostname (password manager-friendly):**
 If your password manager ignores ports for localhost, map a custom hostname to 127.0.0.1 and use it in the browser.
@@ -231,11 +234,15 @@ flowchart LR
 
 ### Components
 
-- **email_client.py**: Handles IMAP/SMTP connections and operations
-- **llm_client.py**: Interfaces with Ollama to analyze email content
-- **calendar_generator.py**: Creates iCalendar (.ics) files
-- **main.py**: Orchestrates the entire workflow
-- **config.py**: Configuration management
+- **`src/ical_bot/settings.py` & `config.py`**: Typed `Settings` snapshot + locked environment configuration
+- **`src/ical_bot/runtime.py` & `run.py`**: Single-coordinator `BotRuntime` (exclusive polling/manual-scan lock) serving the UI under Waitress WSGI
+- **`src/ical_bot/mail/` (`protocol.py`, `common.py`), `email_client.py`, `exchange_client.py`**: `MailAdapter` Protocol + shared MIME composition and header-first UID/Message-ID skip logic for IMAP/SMTP and Exchange EWS
+- **`src/ical_bot/llm/` (`schemas.py`, `duration_rules.py`) & `llm_client.py`**: Ollama `/api/chat` with JSON Schema structured outputs (plus `/api/generate` compatibility) and configurable `DurationRule` heuristics
+- **`src/ical_bot/web/` & `web_ui.py`**: Modular Flask application factory (`create_app()`) with Blueprints (`auth`, `events`, `manual`, `admin`) and `EventWorkflow`
+- **`static/css/` & `static/js/`**: Externalized stylesheets (`auth.css`, `app.css`) and native ES modules (`api.js`, `ics.js`, `calendar.js`, `events.js`, `manual-eval.js`, `app.js`)
+- **`storage.py` & `main.py`**: SQLite WAL persistence, legacy state migration, and core email-processing loop
+- **`calendar_generator.py`**: Standards-compliant iCalendar (`.ics`) generation
+- **`src/ical_bot/time_utils.py` & `identifiers.py`**: Shared UTC/timezone helpers and stable `Message-ID`-anchored email hashing
 
 ### Event Detection
 
@@ -330,7 +337,7 @@ Tweak the `build_reply_message` helper in `messaging.py` to change disclaimers o
 - Use app-specific passwords, not your main email password
 - Keep your LLM local to maintain privacy; non-local LLM endpoints must use HTTPS (`REQUIRE_HTTPS_FOR_LLM=true`)
 - IMAP/SMTP connections enforce TLS 1.2+ with certificate and hostname verification; Exchange Autodiscover is disabled by default (`EXCHANGE_AUTODISCOVER=false`) to avoid credential exposure on untrusted networks
-- Web UI enforces per-session CSRF tokens, same-origin checks, nonce-based CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `HttpOnly`/`SameSite=Lax` cookies (plus `Secure` on HTTPS), 1 MiB max request size, and 12-hour session lifetimes
+- Web UI enforces per-session CSRF tokens, same-origin checks, strict CSP (`script-src 'self' 'nonce-...'` and `style-src 'self'` with zero `'unsafe-inline'`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `HttpOnly`/`SameSite=Lax` cookies (plus `Secure` on HTTPS), 1 MiB max request size, and 12-hour session lifetimes
 - Keep `TRUSTED_PROXY_COUNT=0` unless deployed behind a trusted reverse proxy so `X-Forwarded-Proto` cannot be spoofed
 - Attachment extraction is limited to bounded, text-safe formats (`.txt`, `.md`, `.csv`, `.log`, `.pdf`, `.docx`) using `defusedxml` and uncompressed XML size caps (`ATTACHMENT_MAX_UNCOMPRESSED_BYTES`) against zip bombs, and can be disabled in the UI
 - The systemd unit (`ical-bot.service`) enforces `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, and `UMask=0077`
@@ -398,8 +405,8 @@ WORKLOAD_COOLDOWN_SECONDS=300
    docker compose build
    docker compose up -d
    ```
-   The container runs Flask under single-worker Gunicorn (`app:5000`, single worker preserves in-memory mailbox credentials); `docker-compose.yml` sets `TRUSTED_PROXY_COUNT=1` so the bundled nginx reverse proxy's `X-Forwarded-Proto` is trusted. Enable TLS and mount certs in `deploy/nginx.conf` (which also enforces `client_max_body_size 1m`, security headers, and `/login` rate limiting) before exposing remotely.
-3. Ollama access: when using Docker, set `LLM_ENDPOINT` to `https://<host>/api/generate` (or `http://host.docker.internal:11434/api/generate` with `REQUIRE_HTTPS_FOR_LLM=false` only on an isolated local host bridge).
+   The container runs Flask under single-worker Gunicorn (`web_ui:create_wsgi_app()`, which launches the single-coordinator `BotRuntime` background polling worker and preserves in-memory mailbox credentials); `docker-compose.yml` sets `TRUSTED_PROXY_COUNT=1` so the bundled nginx reverse proxy's `X-Forwarded-Proto` is trusted. Enable TLS and mount certs in `deploy/nginx.conf` (which also enforces `client_max_body_size 1m`, security headers, and `/login` rate limiting) before exposing remotely.
+3. Ollama access: when using Docker, set `LLM_ENDPOINT` to `https://<host>/api/chat` (or `http://host.docker.internal:11434/api/chat` with `REQUIRE_HTTPS_FOR_LLM=false` only on an isolated local host bridge). Legacy `/api/generate` endpoints remain supported.
 4. Auth: on first run, open `/setup` from localhost to create your UI login (minimum 12 characters), then continue with `/login`.
 5. File permissions: restrict `data/` (`0700`) and the SQLite DB/auth files (`0600`) to the service user; do not bake secrets into images.
 
@@ -417,6 +424,22 @@ WORKLOAD_COOLDOWN_SECONDS=300
 - Integration with calendar APIs (Google Calendar, Outlook)
 - Web interface for monitoring
 - Support for updating existing events
+
+## Development & Verification
+
+```bash
+# Python backend, security, and architectural regression suite
+uv run pytest -q
+
+# Frontend JavaScript syntax check and Node unit tests
+node --check static/js/*.js
+node --test tests/js/test_frontend_modules.mjs
+
+# Linting, static type checking, and dependency vulnerability audit
+uv run ruff check src tests *.py
+uv run mypy src/ical_bot
+uv run pip-audit
+```
 
 ## License
 

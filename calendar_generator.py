@@ -8,12 +8,13 @@ import re
 import uuid
 import logging
 
-try:
-    from zoneinfo import ZoneInfo
-except Exception:
-    ZoneInfo = None
-
 import config
+from ical_bot.time_utils import (
+    normalize_timezone_name,
+    parse_iso_datetime,
+    resolve_timezone,
+    utc_stamp,
+)
 from messaging import build_calendar_description
 
 logging.basicConfig(level=logging.INFO)
@@ -21,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 class CalendarGenerator:
+    """Create RFC 5545 compliant iCalendar (.ics) event invitations."""
+
     def __init__(self):
-        configured_tz = (getattr(config, 'DEFAULT_TIMEZONE', '') or '').strip()
-        if not configured_tz or configured_tz.upper() == 'UTC':
-            configured_tz = 'Europe/Berlin'
-        self.timezone = configured_tz
+        """Initialize calendar generator with configured timezone and organizer identity."""
+        self.timezone = normalize_timezone_name()
         self.timezone_info = self._resolve_timezone(self.timezone)
         self.organizer_name = config.ORGANIZER_NAME
         # Allow organizer identity to differ from the sending mailbox so self-attendees can accept
@@ -33,13 +34,8 @@ class CalendarGenerator:
 
     @staticmethod
     def _resolve_timezone(timezone_name: str):
-        if ZoneInfo is None:
-            return timezone.utc
-        try:
-            return ZoneInfo(timezone_name)
-        except Exception:
-            logger.warning("Unknown timezone '%s', falling back to UTC", timezone_name)
-            return timezone.utc
+        """Resolve an IANA timezone string via shared time utilities."""
+        return resolve_timezone(timezone_name)
         
     @staticmethod
     def _sanitize_header_value(text: Optional[str]) -> str:
@@ -80,7 +76,7 @@ class CalendarGenerator:
             end_dt = self._parse_datetime(event_data['end_datetime'])
             
             # Get current timestamp for DTSTAMP
-            now = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+            now = utc_stamp('%Y%m%dT%H%M%SZ')
             
             # Format datetimes for iCalendar
             start_str = self._format_datetime(start_dt)
@@ -143,19 +139,12 @@ class CalendarGenerator:
             raise
     
     def _parse_datetime(self, datetime_str: str) -> datetime:
-        """Parse ISO format datetime string"""
-        try:
-            # Remove timezone suffix if present and parse
-            normalized = (datetime_str or '').strip().replace('Z', '+00:00')
-            if 'T' not in normalized and ' ' in normalized:
-                normalized = normalized.replace(' ', 'T', 1)
-            dt = datetime.fromisoformat(normalized)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=self.timezone_info)
-            return dt
-        except Exception as e:
-            logger.error(f"Error parsing datetime '{datetime_str}': {e}")
-            raise
+        """Parse an ISO format datetime string using the configured default timezone."""
+        dt = parse_iso_datetime(datetime_str, default_tz=self.timezone_info)
+        if dt is None:
+            logger.error(f"Error parsing datetime '{datetime_str}'")
+            raise ValueError(f"Invalid datetime string: {datetime_str!r}")
+        return dt
     
     def _format_datetime(self, dt: datetime) -> str:
         """

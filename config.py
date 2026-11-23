@@ -6,12 +6,17 @@ Update these settings with your email and LLM configuration
 import os
 import json
 import secrets
+import threading
 from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
+from ical_bot.settings import Settings
+
 # Load environment variables from .env file
 load_dotenv()
+
+_CONFIG_LOCK = threading.RLock()
 
 # Email Configuration
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "your-email@gmail.com")
@@ -36,7 +41,7 @@ EXCHANGE_USERNAME = os.getenv("EXCHANGE_USERNAME", "")  # Optional: username/UPN
 EXCHANGE_AUTODISCOVER = os.getenv("EXCHANGE_AUTODISCOVER", "false").lower() == "true"
 
 # LLM Configuration (Ollama local instance)
-LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "http://localhost:11434/api/generate")
+LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "http://localhost:11434/api/chat")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemma4:26b")  # or any model you have installed
 LLM_DEBUG_DIR = os.getenv("LLM_DEBUG_DIR", "")  # empty disables on-disk debug artifacts
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
@@ -46,6 +51,8 @@ LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "300"))
 LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "5m")
 LLM_THINK = os.getenv("LLM_THINK", "")  # Optional explicit thinking override ("true", "false", or level); unset preserves model default
 LLM_MAX_RETRY_ATTEMPTS = int(os.getenv("LLM_MAX_RETRY_ATTEMPTS", "1"))
+LLM_DEFAULT_DURATION_MINUTES = int(os.getenv("LLM_DEFAULT_DURATION_MINUTES", "60"))
+LLM_DURATION_RULES_JSON = os.getenv("LLM_DURATION_RULES_JSON", "")
 RESULTS_DB_PATH = os.getenv("RESULTS_DB_PATH", "data/processed_results.db")
 
 # System Workload & Opportunistic Execution Configuration
@@ -81,7 +88,7 @@ WEB_UI_MAX_CONTENT_LENGTH = int(os.getenv("WEB_UI_MAX_CONTENT_LENGTH", "1048576"
 
 # Processing Configuration
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))  # 5 minutes
-PROCESSED_EMAILS_FILE = "processed_emails.json"
+PROCESSED_EMAILS_FILE = os.getenv("PROCESSED_EMAILS_FILE", "processed_emails.json")
 MAX_EMAILS_PER_CHECK = int(os.getenv("MAX_EMAILS_PER_CHECK", "10"))
 DRY_RUN_TARGET_EVENTS = int(os.getenv("DRY_RUN_TARGET_EVENTS", "5"))
 AUTO_APPROVE_EVENTS = os.getenv("AUTO_APPROVE_EVENTS", "false").lower() == "true"
@@ -165,64 +172,94 @@ def write_private_file(path: Path, content: str) -> None:
 
 
 def _ui_settings_file() -> Path:
-	return Path(UI_SETTINGS_PATH)
+    return Path(UI_SETTINGS_PATH)
 
 
 def _load_ui_settings() -> dict:
-	path = _ui_settings_file()
-	if not path.exists():
-		return {}
-	try:
-		return json.loads(path.read_text(encoding='utf-8'))
-	except Exception:
-		return {}
+    path = _ui_settings_file()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
 
 
 def _save_ui_settings(settings: dict) -> None:
-	path = _ui_settings_file()
-	write_private_file(path, json.dumps(settings))
+    path = _ui_settings_file()
+    write_private_file(path, json.dumps(settings))
 
 
 def _apply_ui_settings_overrides() -> None:
-	global ATTACHMENT_PARSING_ENABLED
-	settings = _load_ui_settings()
-	value = settings.get('attachment_parsing_enabled')
-	if value is None:
-		return
-	if isinstance(value, bool):
-		ATTACHMENT_PARSING_ENABLED = value
-		return
-	if isinstance(value, str):
-		ATTACHMENT_PARSING_ENABLED = value.strip().lower() == 'true'
+    global ATTACHMENT_PARSING_ENABLED
+    with _CONFIG_LOCK:
+        settings = _load_ui_settings()
+        value = settings.get('attachment_parsing_enabled')
+        if value is None:
+            return
+        if isinstance(value, bool):
+            ATTACHMENT_PARSING_ENABLED = value
+            return
+        if isinstance(value, str):
+            ATTACHMENT_PARSING_ENABLED = value.strip().lower() == 'true'
 
 
 _apply_ui_settings_overrides()
 
 
+def get_settings() -> Settings:
+    """Return a thread-safe typed :class:`~ical_bot.settings.Settings` snapshot."""
+    import sys
+
+    return Settings.from_config_module(sys.modules[__name__])
+
+
 def has_email_password() -> bool:
-	placeholder_values = {"your-app-password", "your-password", "change-me"}
-	if not EMAIL_PASSWORD:
-		return False
-	return EMAIL_PASSWORD not in placeholder_values
+    """Return True when a non-placeholder mailbox password is set."""
+    placeholder_values = {"your-app-password", "your-password", "change-me"}
+    with _CONFIG_LOCK:
+        if not EMAIL_PASSWORD:
+            return False
+        return EMAIL_PASSWORD not in placeholder_values
 
 
-def set_email_credentials(password: str, *, email_address: Optional[str] = None, exchange_username: Optional[str] = None) -> None:
-	global EMAIL_PASSWORD, EMAIL_ADDRESS, EXCHANGE_EMAIL, EXCHANGE_USERNAME
-	EMAIL_PASSWORD = password
-	if email_address:
-		EMAIL_ADDRESS = email_address
-		EXCHANGE_EMAIL = email_address
-	if exchange_username:
-		EXCHANGE_USERNAME = exchange_username
+def set_email_credentials(
+    password: str,
+    *,
+    email_address: Optional[str] = None,
+    exchange_username: Optional[str] = None,
+) -> None:
+    """Thread-safely update runtime mailbox credentials in memory.
+
+    Args:
+        password: Mailbox password or app password.
+        email_address: Optional replacement mailbox address.
+        exchange_username: Optional replacement Exchange login username/UPN.
+    """
+    global EMAIL_PASSWORD, EMAIL_ADDRESS, EXCHANGE_EMAIL, EXCHANGE_USERNAME
+    with _CONFIG_LOCK:
+        EMAIL_PASSWORD = password
+        if email_address:
+            EMAIL_ADDRESS = email_address
+            EXCHANGE_EMAIL = email_address
+        if exchange_username:
+            EXCHANGE_USERNAME = exchange_username
 
 
 def set_attachment_parsing_enabled(enabled: bool, *, persist: bool = False) -> None:
-	global ATTACHMENT_PARSING_ENABLED
-	ATTACHMENT_PARSING_ENABLED = bool(enabled)
-	if persist:
-		try:
-			settings = _load_ui_settings()
-			settings['attachment_parsing_enabled'] = ATTACHMENT_PARSING_ENABLED
-			_save_ui_settings(settings)
-		except Exception:
-			pass
+    """Thread-safely update runtime attachment parsing state and optionally persist it.
+
+    Args:
+        enabled: Whether attachment parsing is enabled.
+        persist: When True, persist the setting to ``UI_SETTINGS_PATH`` with ``0600`` mode.
+    """
+    global ATTACHMENT_PARSING_ENABLED
+    with _CONFIG_LOCK:
+        ATTACHMENT_PARSING_ENABLED = bool(enabled)
+        if persist:
+            try:
+                settings = _load_ui_settings()
+                settings['attachment_parsing_enabled'] = ATTACHMENT_PARSING_ENABLED
+                _save_ui_settings(settings)
+            except Exception:
+                pass

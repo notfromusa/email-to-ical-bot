@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import logging
 import os
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from datetime import datetime, timedelta
+from typing import Any, Dict, Iterator, List, Optional, Set
 
-import config
+from ical_bot.time_utils import (
+    get_default_timezone,
+    parse_iso_datetime as shared_parse_iso_datetime,
+    utc_now,
+    utc_now_iso,
+)
+from identifiers import normalize_message_id
 
-try:
-    from zoneinfo import ZoneInfo
-except Exception:
-    ZoneInfo = None
+logger = logging.getLogger(__name__)
 
 
 class StorageManager:
@@ -27,26 +32,70 @@ class StorageManager:
             db_path: Path to the SQLite database file.
         """
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(self.db_path.parent, 0o700)
-        except OSError:
-            pass
-        self._initialize()
-        if self.db_path.exists():
+        self._prepare_and_initialize()
+
+    def _prepare_and_initialize(self) -> None:
+        """Create parent directory if needed, initialize schema, and enforce file permissions."""
+        if str(self.db_path) != ":memory:":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                os.chmod(self.db_path, 0o600)
+                os.chmod(self.db_path.parent, 0o700)
             except OSError:
                 pass
+        self._initialize()
+        self._enforce_file_permissions()
+
+    def rebind(self, db_path: str) -> None:
+        """Point this storage manager to a new SQLite path and initialize its schema.
+
+        Intended for test isolation and controlled runtime re-targeting without
+        breaking existing object references.
+
+        Args:
+            db_path: Replacement SQLite file path.
+        """
+        self.db_path = Path(db_path)
+        self._prepare_and_initialize()
+
+    def _enforce_file_permissions(self) -> None:
+        """Restrict SQLite database and WAL/SHM sidecar files to owner read/write (0600)."""
+        if str(self.db_path) == ":memory:":
+            return
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(f"{self.db_path}{suffix}")
+            if candidate.exists():
+                try:
+                    os.chmod(candidate, 0o600)
+                except OSError:
+                    pass
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        """Open a configured SQLite connection with foreign keys and busy timeout enabled."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield a SQLite connection that commits/rolls back and always closes on exit."""
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _initialize(self) -> None:
-        with self._connect() as conn:
+        """Initialize database tables, WAL journal mode, columns, and secondary indexes."""
+        with self._connection() as conn:
+            if str(self.db_path) != ":memory:":
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS processed_results (
@@ -104,10 +153,51 @@ class StorageManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS processed_emails (
+                    email_id TEXT PRIMARY KEY,
+                    email_message_id TEXT,
+                    source_uid TEXT,
+                    processed_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS imap_sync_state (
+                    mailbox TEXT PRIMARY KEY,
+                    uidvalidity TEXT NOT NULL,
+                    last_uid INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
             self._ensure_columns(conn)
-            conn.commit()
+            self._ensure_indexes(conn)
         self._repair_pending_states()
         self._reconcile_approval_statuses()
+
+    def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
+        """Create idempotent secondary indexes for frequent query and filter predicates."""
+        index_statements = (
+            "CREATE INDEX IF NOT EXISTS idx_processed_results_processed_at ON processed_results(processed_at)",
+            "CREATE INDEX IF NOT EXISTS idx_processed_results_status ON processed_results(status)",
+            "CREATE INDEX IF NOT EXISTS idx_processed_results_message_id ON processed_results(email_message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_processed_results_approval ON processed_results(approval_required, approval_status)",
+            "CREATE INDEX IF NOT EXISTS idx_approval_logs_email_id ON approval_logs(email_id)",
+            "CREATE INDEX IF NOT EXISTS idx_processed_emails_message_id ON processed_emails(email_message_id)",
+        )
+        for statement in index_statements:
+            conn.execute(statement)
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
         required_columns = {
@@ -168,7 +258,7 @@ class StorageManager:
         calendar_item_id: Optional[str] = None,
     ) -> None:
         """Insert or update a processed email result."""
-        processed_at = datetime.utcnow().isoformat()
+        processed_at = utc_now_iso()
         if approval_required and not approval_status:
             approval_status = "pending"
         payload = {
@@ -216,7 +306,7 @@ class StorageManager:
                 }
             )
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO processed_results (
@@ -269,7 +359,6 @@ class StorageManager:
                 """,
                 payload,
             )
-            conn.commit()
 
     def get_results(self, filter_type: str = "all", limit: int = 200) -> List[Dict]:
         """Fetch processed results with optional filtering."""
@@ -287,21 +376,213 @@ class StorageManager:
         query += " ORDER BY datetime(processed_at) DESC LIMIT ?"
         params.append(limit)
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
     def get_result(self, email_id: str) -> Optional[Dict]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM processed_results WHERE email_id = ?", (email_id,)
             ).fetchone()
         return self._row_to_dict(row) if row else None
 
     def get_archived_email_ids(self) -> Set[str]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute("SELECT email_id FROM processed_archive").fetchall()
         return {row[0] for row in rows}
+
+    def mark_email_processed(
+        self,
+        email_id: str,
+        *,
+        message_id: Optional[str] = None,
+        source_uid: Optional[str] = None,
+    ) -> None:
+        """Persist an email ID (and optional normalized Message-ID/UID) as processed in SQLite.
+
+        Args:
+            email_id: Deterministic hashed email identifier.
+            message_id: Optional RFC 5322 Message-ID header value.
+            source_uid: Optional mailbox source UID/identifier.
+        """
+        if not email_id:
+            return
+        norm_mid = normalize_message_id(message_id) or None
+        now_iso = utc_now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO processed_emails (email_id, email_message_id, source_uid, processed_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(email_id) DO UPDATE SET
+                    email_message_id = COALESCE(excluded.email_message_id, processed_emails.email_message_id),
+                    source_uid = COALESCE(excluded.source_uid, processed_emails.source_uid),
+                    processed_at = excluded.processed_at
+                """,
+                (email_id, norm_mid, str(source_uid) if source_uid is not None else None, now_iso),
+            )
+
+    def mark_emails_processed(self, email_ids: Set[str]) -> None:
+        """Bulk-insert processed email IDs idempotently into SQLite.
+
+        Args:
+            email_ids: Set of hashed email identifiers to ensure are recorded as processed.
+        """
+        cleaned = [(eid, utc_now_iso()) for eid in (email_ids or set()) if eid]
+        if not cleaned:
+            return
+        with self._connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO processed_emails (email_id, processed_at)
+                VALUES (?, ?)
+                ON CONFLICT(email_id) DO NOTHING
+                """,
+                cleaned,
+            )
+
+    def unmark_email_processed(self, email_id: str) -> None:
+        """Remove an email ID from the processed set so it can be re-evaluated or retried.
+
+        Args:
+            email_id: Hashed email identifier to unmark.
+        """
+        if not email_id:
+            return
+        with self._connection() as conn:
+            conn.execute("DELETE FROM processed_emails WHERE email_id = ?", (email_id,))
+
+    def get_processed_email_ids(self) -> Set[str]:
+        """Return all processed and archived email IDs stored in SQLite."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT email_id FROM processed_emails
+                UNION
+                SELECT email_id FROM processed_archive
+                """
+            ).fetchall()
+        return {row[0] for row in rows if row[0]}
+
+    def get_processed_message_ids(self) -> Set[str]:
+        """Return normalized RFC 5322 Message-IDs for all currently processed emails."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT email_message_id AS mid FROM processed_emails
+                WHERE email_message_id IS NOT NULL AND email_message_id != ''
+                UNION
+                SELECT r.email_message_id AS mid FROM processed_results r
+                INNER JOIN processed_emails p ON p.email_id = r.email_id
+                WHERE r.email_message_id IS NOT NULL AND r.email_message_id != ''
+                """
+            ).fetchall()
+        return {
+            norm
+            for row in rows
+            if (norm := normalize_message_id(row["mid"]))
+        }
+
+    def get_pending_retry_email_ids(self) -> List[str]:
+        """Return email IDs whose last evaluation yielded or timed out without sending."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT email_id FROM processed_results
+                WHERE status IN ('llm_yielding', 'llm_timeout')
+                  AND (sent = 0 OR sent IS NULL)
+                """
+            ).fetchall()
+        return [row[0] for row in rows if row[0]]
+
+    def import_legacy_processed_emails(self, json_path: Path) -> int:
+        """One-time idempotent migration of legacy ``processed_emails.json`` into SQLite.
+
+        Tracks completion per resolved file path in ``schema_meta`` so previously
+        unmarked/retried emails are not re-imported on later restarts. The legacy
+        JSON file is left on disk untouched as a backup.
+
+        Args:
+            json_path: Path to legacy ``processed_emails.json``.
+
+        Returns:
+            Number of newly imported processed email IDs.
+        """
+        target = Path(json_path)
+        if not target.exists():
+            return 0
+        meta_key = f"legacy_processed_import:{target.resolve()}"
+        with self._connection() as conn:
+            already = conn.execute(
+                "SELECT 1 FROM schema_meta WHERE key = ?",
+                (meta_key,),
+            ).fetchone()
+            if already:
+                return 0
+            try:
+                data = json.loads(target.read_text(encoding="utf-8"))
+                raw_ids = data.get("processed_ids", []) if isinstance(data, dict) else []
+            except Exception as exc:
+                logger.warning("Failed reading legacy processed emails from %s: %s", target, exc)
+                return 0
+
+            now_iso = utc_now_iso()
+            unique_ids = sorted({str(eid).strip() for eid in raw_ids if eid})
+            inserted = 0
+            if unique_ids:
+                before = conn.execute("SELECT COUNT(*) FROM processed_emails").fetchone()[0]
+                conn.executemany(
+                    """
+                    INSERT INTO processed_emails (email_id, processed_at)
+                    VALUES (?, ?)
+                    ON CONFLICT(email_id) DO NOTHING
+                    """,
+                    [(eid, now_iso) for eid in unique_ids],
+                )
+                after = conn.execute("SELECT COUNT(*) FROM processed_emails").fetchone()[0]
+                inserted = max(0, after - before)
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (meta_key, now_iso),
+            )
+            if inserted:
+                logger.info("Migrated %d processed email ID(s) from %s into SQLite", inserted, target)
+            return inserted
+
+    def get_imap_sync_state(self, mailbox: str) -> Optional[Dict[str, Any]]:
+        """Return stored IMAP ``UIDVALIDITY`` and high-water ``last_uid`` for a mailbox."""
+        if not mailbox:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT mailbox, uidvalidity, last_uid, updated_at FROM imap_sync_state WHERE mailbox = ?",
+                (mailbox,),
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def update_imap_sync_state(self, mailbox: str, uidvalidity: str, last_uid: int) -> None:
+        """Persist IMAP ``UIDVALIDITY`` and high-water ``last_uid`` for a mailbox."""
+        if not mailbox:
+            return
+        now_iso = utc_now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO imap_sync_state (mailbox, uidvalidity, last_uid, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(mailbox) DO UPDATE SET
+                    uidvalidity = excluded.uidvalidity,
+                    last_uid = CASE
+                        WHEN imap_sync_state.uidvalidity = excluded.uidvalidity
+                             AND imap_sync_state.last_uid > excluded.last_uid
+                        THEN imap_sync_state.last_uid
+                        ELSE excluded.last_uid
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (mailbox, str(uidvalidity), int(last_uid), now_iso),
+            )
 
     def get_llm_error_count(self, email_id: str) -> int:
         """Return the number of failed LLM attempts recorded for an email ID.
@@ -312,7 +593,7 @@ class StorageManager:
         Returns:
             int: The recorded error count, or 0 if no record exists.
         """
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT llm_error_count FROM processed_results WHERE email_id = ?",
                 (email_id,),
@@ -326,7 +607,7 @@ class StorageManager:
         Returns:
             List[str]: List of recovered email IDs.
         """
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 "SELECT email_id FROM processed_results WHERE llm_prompt IS NOT NULL AND llm_response IS NULL"
             ).fetchall()
@@ -342,7 +623,6 @@ class StorageManager:
                     WHERE llm_prompt IS NOT NULL AND llm_response IS NULL
                     """
                 )
-                conn.commit()
         return email_ids
 
     def mark_event_sent(
@@ -362,14 +642,14 @@ class StorageManager:
         action: Optional[str] = None,
         calendar_item_id: Optional[str] = None,
     ) -> None:
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = utc_now_iso()
         ics_preview = None
         if ics_content:
             ics_preview = ics_content[:500] + '...' if len(ics_content) > 500 else ics_content
 
         existing_sent_indices: List[int] = []
         raw_candidates = None
-        with self._connect() as conn:
+        with self._connection() as conn:
             existing_row = conn.execute(
                 "SELECT sent_event_indices, event_candidates FROM processed_results WHERE email_id = ?",
                 (email_id,),
@@ -410,7 +690,7 @@ class StorageManager:
             else:
                 effective_status = status
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE processed_results
@@ -465,7 +745,6 @@ class StorageManager:
                     "email_id": email_id,
                 },
             )
-            conn.commit()
 
         if sent or status == 'dry_run_preview':
             effective_action = action or ('approved' if sent else 'dry_run_preview')
@@ -478,7 +757,7 @@ class StorageManager:
 
     def reset_for_rescan(self, email_id: str) -> None:
         """Reset an email's approval and sent state so it can be re-evaluated cleanly."""
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE processed_results
@@ -493,11 +772,10 @@ class StorageManager:
                 """,
                 (email_id,),
             )
-            conn.commit()
 
     def get_stats(self) -> Dict:
         """Compute statistics for dashboard consumption."""
-        with self._connect() as conn:
+        with self._connection() as conn:
             active_total = conn.execute("SELECT COUNT(*) FROM processed_results").fetchone()[0]
             events = conn.execute(
                 "SELECT COUNT(*) FROM processed_results WHERE has_event = 1"
@@ -526,18 +804,18 @@ class StorageManager:
 
         total_processed = active_total + archived_total
         detection_rate = float(events) / active_total if active_total else 0.0
-        now = datetime.now(timezone.utc)
+        now = utc_now()
+        default_tz = self._default_timezone()
         upcoming = 0
         past = 0
         for row in event_rows:
-            try:
-                event_start = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
-                if event_start >= now:
-                    upcoming += 1
-                else:
-                    past += 1
-            except Exception:
+            event_start = shared_parse_iso_datetime(row[0], default_tz=default_tz, as_utc=True)
+            if event_start is None:
                 continue
+            if event_start >= now:
+                upcoming += 1
+            else:
+                past += 1
 
         metrics = self.get_database_metrics(total_hint=total_processed)
 
@@ -560,7 +838,7 @@ class StorageManager:
     def get_database_metrics(self, total_hint: Optional[int] = None) -> Dict:
         """Return entry count and file size for the SQLite database."""
         if total_hint is None:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 total = conn.execute("SELECT COUNT(*) FROM processed_results").fetchone()[0]
         else:
             total = total_hint
@@ -578,7 +856,7 @@ class StorageManager:
             "contexts_cleared": 0,
         }
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 "SELECT email_id, email_body, llm_prompt, llm_raw_result FROM processed_results"
             ).fetchall()
@@ -612,9 +890,6 @@ class StorageManager:
                     )
                     stats["records_updated"] += 1
 
-            conn.commit()
-        conn.close()
-
         if stats["records_updated"] > 0:
             try:
                 self._vacuum()
@@ -626,7 +901,7 @@ class StorageManager:
     def _repair_pending_states(self) -> None:
         """Ensure pending approvals remain marked and logged across restarts."""
         pending_ids: List[str] = []
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT email_id FROM processed_results
@@ -641,10 +916,9 @@ class StorageManager:
                     "UPDATE processed_results SET approval_status = 'pending' WHERE email_id = ?",
                     [(email_id,) for email_id in pending_ids],
                 )
-                conn.commit()
 
         all_pending_ids: List[str] = []
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT email_id FROM processed_results
@@ -660,7 +934,7 @@ class StorageManager:
 
     def _reconcile_approval_statuses(self) -> int:
         """Normalize approval_status based on latest logs/status flags."""
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT email_id, approval_status, status, sent
@@ -689,7 +963,7 @@ class StorageManager:
                 normalized = "pending"
 
             if not normalized or normalized == "pending":
-                with self._connect() as conn:
+                with self._connection() as conn:
                     last = conn.execute(
                         """
                         SELECT action
@@ -711,12 +985,11 @@ class StorageManager:
                 updates.append((normalized, email_id))
 
         if updates:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.executemany(
                     "UPDATE processed_results SET approval_status = ? WHERE email_id = ?",
                     updates,
                 )
-                conn.commit()
         return len(updates)
 
     def reconcile_approvals(self) -> Dict[str, Any]:
@@ -726,15 +999,15 @@ class StorageManager:
             "updated": updated,
         }
 
-    def purge_old_entries(self, months: int = 2, days: Optional[int] = None) -> Dict[str, int]:
+    def purge_old_entries(self, months: int = 2, days: Optional[int] = None) -> Dict[str, Any]:
         """Remove stale records older than `months` months or explicit `days`."""
         if days is not None:
             days = max(int(days), 1)
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = utc_now() - timedelta(days=days)
         else:
             months = max(months, 1)
-            cutoff = datetime.now(timezone.utc) - timedelta(days=30 * months)
-        stats = {
+            cutoff = utc_now() - timedelta(days=30 * months)
+        stats: Dict[str, Any] = {
             "cutoff_iso": cutoff.isoformat(),
             "records_scanned": 0,
             "removed_no_event": 0,
@@ -742,7 +1015,7 @@ class StorageManager:
             "records_deleted": 0,
         }
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT email_id, has_event, email_date, processed_at, event_start, event_end
@@ -768,13 +1041,11 @@ class StorageManager:
 
         if removable_ids:
             self._archive_email_ids(removable_ids)
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.executemany(
                     "DELETE FROM processed_results WHERE email_id = ?",
                     [(email_id,) for email_id in removable_ids],
                 )
-                conn.commit()
-            conn.close()
             stats["records_deleted"] = len(removable_ids)
             try:
                 self._vacuum()
@@ -784,21 +1055,23 @@ class StorageManager:
         return stats
 
     def _vacuum(self) -> None:
-        """Compact the SQLite database file to remove freed pages containing redacted text."""
+        """Checkpoint WAL pages and compact the SQLite database file to purge freed pages."""
         if str(self.db_path) == ":memory:" or not self.db_path.exists():
             return
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         try:
             conn.isolation_level = None
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.execute("VACUUM")
         finally:
             conn.close()
+        self._enforce_file_permissions()
 
     def _archive_email_ids(self, email_ids: List[str]) -> None:
         if not email_ids:
             return
-        timestamp = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+        timestamp = utc_now_iso()
+        with self._connection() as conn:
             conn.executemany(
                 """
                 INSERT INTO processed_archive (email_id, archived_at)
@@ -807,7 +1080,6 @@ class StorageManager:
                 """,
                 [(email_id, timestamp) for email_id in email_ids],
             )
-            conn.commit()
 
     @staticmethod
     def _serialize_raw(raw: Optional[Any]) -> Optional[str]:
@@ -826,27 +1098,13 @@ class StorageManager:
 
     @staticmethod
     def _default_timezone():
-        timezone_name = (getattr(config, 'DEFAULT_TIMEZONE', '') or '').strip()
-        if not timezone_name or timezone_name.upper() == 'UTC':
-            timezone_name = 'Europe/Berlin'
-        if ZoneInfo is None:
-            return timezone.utc
-        try:
-            return ZoneInfo(timezone_name)
-        except Exception:
-            return timezone.utc
+        """Return configured default timezone via shared time utilities."""
+        return get_default_timezone()
 
     @staticmethod
     def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
-        if not value:
-            return None
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=StorageManager._default_timezone())
-        return dt
+        """Parse an ISO-8601 timestamp using the configured default timezone when naive."""
+        return shared_parse_iso_datetime(value, default_tz=StorageManager._default_timezone())
 
     @staticmethod
     def _redact_prompt_body(prompt: Optional[str]) -> Optional[str]:
@@ -939,8 +1197,8 @@ class StorageManager:
     ) -> None:
         if not email_id or not action:
             return
-        timestamp = datetime.utcnow().isoformat()
-        with self._connect() as conn:
+        timestamp = utc_now_iso()
+        with self._connection() as conn:
             if action == 'pending':
                 exists = conn.execute(
                     "SELECT 1 FROM approval_logs WHERE email_id = ? AND action = 'pending'",
@@ -961,12 +1219,11 @@ class StorageManager:
                     "timestamp": timestamp,
                 },
             )
-            conn.commit()
 
     def get_approval_history(self, email_id: str) -> List[Dict[str, Any]]:
         if not email_id:
             return []
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT action, actor, note, timestamp
@@ -985,8 +1242,8 @@ class StorageManager:
         actor: Optional[str] = None,
         note: Optional[str] = None,
     ) -> None:
-        timestamp = datetime.utcnow().isoformat()
-        with self._connect() as conn:
+        timestamp = utc_now_iso()
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE processed_results
@@ -1003,6 +1260,5 @@ class StorageManager:
                     "approved_by": actor,
                 },
             )
-            conn.commit()
 
         self.log_approval_action(email_id, 'declined', actor=actor, note=note)

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional, Union
 
+from ical_bot.time_utils import parse_iso_datetime
+
 _FIELD_SEPARATOR = "\x1f"
 
 # Match common forward prefixes (e.g. English Fwd/FW, German WG, French TR, Spanish VS/RV, Italian I)
@@ -66,13 +68,8 @@ def is_forwarded_email(subject: Optional[str] = None, body: Optional[str] = None
 
 
 def _parse_iso_datetime(value: str) -> Optional[datetime]:
-    cleaned = value.strip()
-    if not cleaned:
-        return None
-    try:
-        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    """Parse an ISO-8601 timestamp string via shared time utilities."""
+    return parse_iso_datetime(value, default_tz=None)
 
 
 def normalize_timestamp(value: Optional[Union[str, datetime]]) -> str:
@@ -116,6 +113,23 @@ def fingerprint_body(body: Optional[str]) -> str:
     return digest
 
 
+def normalize_message_id(message_id: Optional[str]) -> str:
+    """Normalize an RFC 5322 Message-ID header for case- and bracket-insensitive matching.
+
+    Args:
+        message_id: Raw ``Message-ID`` header value or ``None``.
+
+    Returns:
+        Normalized lowercase identifier without outer angle brackets or whitespace.
+    """
+    if not message_id:
+        return ""
+    cleaned = re.sub(r"[\r\n\x00]+", "", str(message_id)).strip()
+    if cleaned.startswith("<") and cleaned.endswith(">") and len(cleaned) >= 2:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned.lower()
+
+
 def generate_email_id(
     *,
     message_id: Optional[str],
@@ -137,8 +151,57 @@ def generate_email_id(
     return f"msg_{digest}"
 
 
+def generate_stable_email_id(
+    *,
+    message_id: Optional[str],
+    timestamp: Optional[str],
+    sender: Optional[str],
+    subject: Optional[str],
+    body_hash: Optional[str] = None,
+) -> str:
+    """Build a stable hashed email identifier immune to attachment-parsing toggles.
+
+    When a non-empty RFC 5322 ``Message-ID`` is available, the identifier is
+    derived strictly from header metadata (normalized ``Message-ID``, timestamp,
+    sender, and subject) so toggling ``ATTACHMENT_PARSING_ENABLED`` or minor body
+    re-decoding does not mutate the ID or re-trigger LLM analysis. When no
+    ``Message-ID`` is present, falls back to :func:`generate_email_id` with
+    ``body_hash`` entropy.
+
+    Args:
+        message_id: RFC 5322 ``Message-ID`` header if available.
+        timestamp: Normalized ISO-8601 timestamp string.
+        sender: Sender email address or header value.
+        subject: Email subject string.
+        body_hash: Fallback SHA-256 hex digest of the message body when ``message_id`` is absent.
+
+    Returns:
+        Deterministic identifier prefixed with ``msg_``.
+    """
+    norm_mid = normalize_message_id(message_id)
+    if norm_mid:
+        components = [
+            norm_mid,
+            (timestamp or "").strip(),
+            (sender or "").strip().lower(),
+            (subject or "").strip(),
+        ]
+        payload = _FIELD_SEPARATOR.join(components)
+        digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+        return f"msg_{digest}"
+    return generate_email_id(
+        message_id=message_id,
+        timestamp=timestamp,
+        sender=sender,
+        subject=subject,
+        body_hash=body_hash,
+    )
+
+
 __all__ = [
     "generate_email_id",
+    "generate_stable_email_id",
+    "normalize_message_id",
     "fingerprint_body",
     "normalize_timestamp",
     "is_forwarded_email",

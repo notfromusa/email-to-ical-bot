@@ -11,12 +11,13 @@ services:
       # Trust one reverse-proxy hop (nginx) for X-Forwarded-* headers
       - TRUSTED_PROXY_COUNT=1
       # Point to the Ollama endpoint; use HTTPS (or disable REQUIRE_HTTPS_FOR_LLM only on a private isolated bridge)
-      - LLM_ENDPOINT=http://host.docker.internal:11434/api/generate
+      - LLM_ENDPOINT=http://host.docker.internal:11434/api/chat
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
       - ./templates:/app/templates
+      - ./static:/app/static
     expose:
       - "5000"
 

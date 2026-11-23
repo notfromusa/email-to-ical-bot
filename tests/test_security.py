@@ -2,7 +2,6 @@
 
 import io
 import json
-import os
 import re
 import ssl
 import stat
@@ -39,9 +38,9 @@ def reset_rate_limits():
 
 
 def test_render_event_card_escapes_untrusted_fields():
-    """Verify renderEventCard in templates/index.html HTML-escapes all untrusted email/LLM fields."""
-    index_html = (Path(web_ui.app.root_path) / "templates" / "index.html").read_text(encoding="utf-8")
-    match = re.search(r"function renderEventCard\(event\)\s*\{.*?\n\s{8}\}", index_html, re.DOTALL)
+    """Verify renderEventCard in static/js/events.js HTML-escapes all untrusted email/LLM fields."""
+    events_js = (Path(web_ui.app.root_path) / "static" / "js" / "events.js").read_text(encoding="utf-8")
+    match = re.search(r"export function renderEventCard\(event\)\s*\{.*?\n\}", events_js, re.DOTALL)
     assert match is not None
     fn_body = match.group(0)
 
@@ -60,13 +59,24 @@ def test_render_event_card_escapes_untrusted_fields():
 
 
 def test_templates_have_no_inline_handlers_or_external_fonts():
-    """Verify templates contain zero inline event attributes and no external Google Fonts CDN links."""
-    templates_dir = Path(web_ui.app.root_path) / "templates"
+    """Verify templates and static JS contain zero inline handlers, inline styles, or external fonts."""
+    root_dir = Path(web_ui.app.root_path)
+    templates_dir = root_dir / "templates"
     inline_re = re.compile(r"\bon[a-z]+\s*=", re.IGNORECASE)
+    inline_style_attr_re = re.compile(r"\bstyle\s*=", re.IGNORECASE)
     for name in ("index.html", "login.html", "setup.html"):
         content = (templates_dir / name).read_text(encoding="utf-8")
         assert not inline_re.search(content), f"Unexpected inline event handler in {name}"
+        assert not inline_style_attr_re.search(content), f"Unexpected inline style attribute in {name}"
+        assert "<style" not in content.lower(), f"Unexpected inline <style> block in {name}"
         assert "fonts.googleapis.com" not in content, f"External Google Fonts link found in {name}"
+
+    for js_path in sorted((root_dir / "static" / "js").glob("*.js")):
+        js_content = js_path.read_text(encoding="utf-8")
+        assert not inline_re.search(js_content), f"Unexpected inline event handler in {js_path.name}"
+        assert 'style="' not in js_content and "style='" not in js_content, (
+            f"Unexpected inline style attribute in {js_path.name}"
+        )
 
 
 # --- C-2: IMAP & SMTP TLS Certificate Verification ---
@@ -596,6 +606,8 @@ def test_security_headers_present_on_html_and_api_responses(tmp_path):
             assert resp_login.status_code == 200
             csp = resp_login.headers.get("Content-Security-Policy", "")
             assert "frame-ancestors 'none'" in csp
+            assert "style-src 'self'" in csp
+            assert "'unsafe-inline'" not in csp
             assert "'nonce-" in csp
             assert resp_login.headers.get("X-Frame-Options") == "DENY"
             assert resp_login.headers.get("X-Content-Type-Options") == "nosniff"

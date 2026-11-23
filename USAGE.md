@@ -9,10 +9,9 @@ DRY_RUN=true
 
 ## Running the Bot
 
-### With Web UI (Recommended for monitoring)
+### With Web UI (Recommended — Single-Coordinator BotRuntime + Waitress WSGI)
 ```bash
-source .venv/bin/activate
-python run.py
+uv run run.py
 ```
 Then open: http://127.0.0.1:5000
 
@@ -22,28 +21,24 @@ First-time login:
 
 ### Bot Only (No Web UI)
 ```bash
-source .venv/bin/activate
-python run.py --no-web
+uv run run.py --no-web
 ```
 
 ### Single Check (Test Mode)
 ```bash
-source .venv/bin/activate
-python run.py --once
+uv run run.py --once
 ```
 
 ### Web UI Only
 ```bash
-source .venv/bin/activate
-python web_ui.py
+uv run web_ui.py
 ```
 
-## Installing Flask
+## Installing Dependencies
 
-If you haven't already:
+If you haven't synced dependencies yet:
 ```bash
-source .venv/bin/activate
-uv pip install -e .
+uv sync
 ```
 
 ## Configuration
@@ -51,6 +46,9 @@ uv pip install -e .
 Edit `.env` file (`chmod 600 .env`):
 - `DRY_RUN=true` - Preview mode (no emails sent)
 - `DRY_RUN=false` - Live mode (emails will be sent)
+- `LLM_ENDPOINT=http://localhost:11434/api/chat` - Ollama endpoint (`/api/chat` with JSON Schema default; legacy `/api/generate` also supported)
+- `LLM_DEFAULT_DURATION_MINUTES=60` - Default duration when an invite omits an end time
+- `LLM_DURATION_RULES_JSON` - Optional JSON array of custom keyword duration rules
 - `WEB_UI_PORT=5000` - Change web UI port
 - `CHECK_INTERVAL_SECONDS=300` - How often to check emails
 - `REQUIRE_HTTPS_FOR_REMOTE=true` - Require HTTPS for non-local access
@@ -61,6 +59,15 @@ Edit `.env` file (`chmod 600 .env`):
 - `ENFORCE_INTERNAL_RECIPIENT_DOMAIN=false` - Enforce `INTERNAL_EMAIL_DOMAIN` on outbound recipients
 - `AUTO_APPROVE_ALLOW_EXTERNAL_RECIPIENTS=false` - Keep manual approval required for external recipients
 - `EXCHANGE_AUTODISCOVER=false` - Prefer explicit `EXCHANGE_SERVER` over EWS Autodiscover
+
+## State & Verification
+
+- Processed email state, IMAP UID sync watermarks, results, and approval logs are unified in SQLite (`data/processed_results.db` in WAL mode). Any legacy `processed_emails.json` file is imported automatically once on startup and left untouched.
+- Run the test and static verification suite with:
+  ```bash
+  uv run pytest -q
+  node --test tests/js/test_frontend_modules.mjs
+  ```
 
 ## Web Dashboard Features
 

@@ -6,21 +6,27 @@ import imaplib
 import smtplib
 import ssl
 import email
-import re
-from pathlib import Path
-from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from email.utils import parseaddr, getaddresses
-from typing import List, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import logging
 
 import config
 from attachment_parser import AttachmentExtractor
-from identifiers import generate_email_id, fingerprint_body, normalize_timestamp, is_forwarded_email
-from messaging import build_reply_message_html_from_text, format_invite_subject
+from ical_bot.mail.common import (
+    build_calendar_mime_message,
+    extract_summary_from_ics,
+    filter_allowed_recipients,
+    resolve_invite_subject,
+    save_outbound_mime_dump,
+    strip_reply_trail,
+)
+from identifiers import (
+    fingerprint_body,
+    generate_email_id,
+    generate_stable_email_id,
+    normalize_message_id,
+    normalize_timestamp,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,99 +64,170 @@ class EmailClient:
             logger.error(f"Failed to connect to IMAP: {e}")
             raise
     
+    @staticmethod
+    def _extract_uid_validity(mail: Any) -> Optional[str]:
+        """Read RFC 3501 UIDVALIDITY from an IMAP connection after SELECT INBOX."""
+        try:
+            typ, data = mail.response("UIDVALIDITY")
+            if typ == "UIDVALIDITY" and data and data[0]:
+                raw = data[0]
+                return raw.decode() if isinstance(raw, bytes) else str(raw)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_fetch_payload(msg_data: Any) -> Optional[bytes]:
+        """Extract raw message or header bytes from an IMAP FETCH response list."""
+        for response_part in msg_data or ():
+            if isinstance(response_part, tuple) and len(response_part) > 1:
+                payload = response_part[1]
+                if isinstance(payload, (bytes, bytearray)):
+                    return bytes(payload)
+        return None
+
     def fetch_unprocessed_emails(
         self,
-        processed_ids: set,
+        processed_ids: Set[str],
         max_emails: int = 10,
         *,
         offset: int = 0,
         skip_processed: bool = True,
-        exclude_ids: Optional[set] = None
-    ) -> Tuple[List[Dict], bool]:
-        """
-        Fetch unprocessed emails from inbox
-        
+        exclude_ids: Optional[Set[str]] = None,
+        processed_message_ids: Optional[Set[str]] = None,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Fetch unprocessed emails from the IMAP inbox using RFC 3501 UIDs.
+
+        Performs a lightweight header-only ``BODY.PEEK[HEADER.FIELDS ...]`` fetch
+        first to skip already-processed messages before downloading full bodies
+        and parsing attachments.
+
         Args:
-            processed_ids: Set of email IDs that have already been processed
-            max_emails: Maximum number of emails to fetch
-            offset: Batch offset (0 = newest batch)
-            skip_processed: If True, exclude IDs found in processed_ids
-            exclude_ids: Additional IDs to ignore (per run)
-            
+            processed_ids: Set of hashed email IDs that have already been processed.
+            max_emails: Maximum number of UIDs to inspect in this batch.
+            offset: Batch offset (0 = newest batch).
+            skip_processed: If True, exclude messages already seen by ID or Message-ID.
+            exclude_ids: Additional IDs to ignore for the current check cycle.
+            processed_message_ids: Normalized RFC 5322 Message-IDs already processed.
+
         Returns:
-            Tuple of (emails list, has_more flag)
+            Tuple of ``(emails list, has_more flag)``.
         """
-        emails = []
+        emails: List[Dict[str, Any]] = []
         has_more = False
         mail = None
         try:
             mail = self.connect_imap()
             mail.select('INBOX')
-            
-            # Search for all unseen emails or recent emails
-            _, message_numbers = mail.search(None, 'ALL')
-            
-            if not message_numbers[0]:
+            uidvalidity = self._extract_uid_validity(mail)
+
+            _, uid_numbers = mail.uid('search', None, 'ALL')
+
+            if not uid_numbers or not uid_numbers[0]:
                 logger.info("No emails found")
                 return emails, False
-            
-            email_ids = [msg_id.decode() for msg_id in message_numbers[0].split()]
-            email_ids.reverse()  # newest first
+
+            uids = [uid.decode() for uid in uid_numbers[0].split()]
+            uids.reverse()  # newest first
             start = offset * max_emails
             end = start + max_emails
-            batch_ids = email_ids[start:end]
-            has_more = end < len(email_ids)
-            
-            for email_id_str in batch_ids:
-                _, msg_data = mail.fetch(email_id_str, '(BODY.PEEK[])')
-                
-                for response_part in msg_data:
-                    if isinstance(response_part, tuple):
-                        msg = email.message_from_bytes(response_part[1])
-                        
-                        subject = msg['subject']
-                        sender = msg['from']
-                        date = msg['date']
-                        message_id = msg['message-id']
-                        
-                        # Extract email body and trim quoted history (preserving forwarded emails)
-                        body = self._strip_reply_trail(self._get_email_body(msg), subject=subject)
-                        attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
-                        if attachment_text:
-                            body = f"{body}\n\n{attachment_text}" if body else attachment_text
-                        
-                        recipients = self._extract_recipients(msg)
+            batch_uids = uids[start:end]
+            has_more = end < len(uids)
 
-                        timestamp = normalize_timestamp(date)
-                        body_hash = fingerprint_body(body)
-                        hashed_id = generate_email_id(
-                            message_id=message_id or email_id_str,
-                            timestamp=timestamp or date,
-                            sender=sender,
-                            subject=subject,
-                            body_hash=body_hash,
+            for uid_str in batch_uids:
+                # 1. Header-first fetch avoids downloading full MIME/attachments for seen messages
+                _, header_data = mail.uid(
+                    'fetch',
+                    uid_str,
+                    '(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM DATE)])',
+                )
+                header_bytes = self._extract_fetch_payload(header_data)
+                if header_bytes:
+                    hdr_msg = email.message_from_bytes(header_bytes)
+                    hdr_subject = hdr_msg['subject']
+                    hdr_sender = hdr_msg['from']
+                    hdr_date = hdr_msg['date']
+                    hdr_message_id = hdr_msg['message-id']
+                    hdr_timestamp = normalize_timestamp(hdr_date)
+                    norm_mid = normalize_message_id(hdr_message_id)
+
+                    if skip_processed and processed_message_ids and norm_mid and norm_mid in processed_message_ids:
+                        continue
+
+                    if norm_mid:
+                        stable_id = generate_stable_email_id(
+                            message_id=hdr_message_id,
+                            timestamp=hdr_timestamp or hdr_date,
+                            sender=hdr_sender,
+                            subject=hdr_subject,
                         )
-
-                        if exclude_ids and hashed_id in exclude_ids:
+                        if exclude_ids and stable_id in exclude_ids:
                             continue
-                        if skip_processed and hashed_id in processed_ids:
+                        if skip_processed and stable_id in processed_ids:
                             continue
 
-                        emails.append({
-                            'id': hashed_id,
-                            'source_id': email_id_str,
-                            'message_id': message_id or email_id_str,
-                            'subject': subject,
-                            'sender': sender,
-                            'date': timestamp or date,
-                            'body': body,
-                            'original_msg': msg,
-                            'recipients': recipients,
-                            'timestamp': timestamp or date,
-                        })
-                        
-                        logger.info(f"Fetched email: {subject} from {sender}")
-            
+                # 2. Fetch full message only for candidates not skipped by headers
+                _, msg_data = mail.uid('fetch', uid_str, '(BODY.PEEK[])')
+                raw_bytes = self._extract_fetch_payload(msg_data)
+                if not raw_bytes:
+                    continue
+
+                msg = email.message_from_bytes(raw_bytes)
+                subject = msg['subject']
+                sender = msg['from']
+                date = msg['date']
+                message_id = msg['message-id']
+
+                body = self._strip_reply_trail(self._get_email_body(msg), subject=subject)
+                attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
+                if attachment_text:
+                    body = f"{body}\n\n{attachment_text}" if body else attachment_text
+
+                recipients = self._extract_recipients(msg)
+                timestamp = normalize_timestamp(date)
+                body_hash = fingerprint_body(body)
+                legacy_id = generate_email_id(
+                    message_id=message_id or uid_str,
+                    timestamp=timestamp or date,
+                    sender=sender,
+                    subject=subject,
+                    body_hash=body_hash,
+                )
+                resolved_id = (
+                    generate_stable_email_id(
+                        message_id=message_id,
+                        timestamp=timestamp or date,
+                        sender=sender,
+                        subject=subject,
+                        body_hash=body_hash,
+                    )
+                    if normalize_message_id(message_id)
+                    else legacy_id
+                )
+
+                if exclude_ids and (resolved_id in exclude_ids or legacy_id in exclude_ids):
+                    continue
+                if skip_processed and (resolved_id in processed_ids or legacy_id in processed_ids):
+                    continue
+
+                emails.append({
+                    'id': resolved_id,
+                    'legacy_id': legacy_id,
+                    'source_id': uid_str,
+                    'uid': uid_str,
+                    'uidvalidity': uidvalidity,
+                    'message_id': message_id or uid_str,
+                    'subject': subject,
+                    'sender': sender,
+                    'date': timestamp or date,
+                    'body': body,
+                    'original_msg': msg,
+                    'recipients': recipients,
+                    'timestamp': timestamp or date,
+                })
+
+                logger.info(f"Fetched email: {subject} from {sender}")
+
         except Exception as e:
             logger.error(f"Error fetching emails: {e}")
             raise
@@ -164,7 +241,7 @@ class EmailClient:
                     mail.logout()
                 except Exception:
                     pass
-        
+
         return emails, has_more
     
     def _get_email_body(self, msg) -> str:
@@ -196,87 +273,18 @@ class EmailClient:
         return body
 
     def _strip_reply_trail(self, body: str, subject: Optional[str] = None) -> str:
-        """Remove quoted previous messages and reply headers for cleaner LLM input.
+        """Remove quoted previous messages and reply headers while keeping forwards intact."""
+        return strip_reply_trail(body, subject=subject)
 
-        Preserves forwarded emails intact so that forwarded events are not discarded.
-        """
-        if not body:
-            return body
-        if is_forwarded_email(subject=subject, body=body):
-            return body.strip()
-
-        markers = [
-            '-----original message-----',
-            '----- reply message -----',
-            '-----ursprüngliche nachricht-----',
-        ]
-        header_block_prefixes = ('from:', 'de:', 'von:', 'gesendet:', 'sent:', 'to:', 'an:', 'subject:', 'betreff:', 'cc:')
-        reply_header_patterns = [
-            re.compile(r'^on\s.+wrote:\s*$', re.IGNORECASE),
-            re.compile(r'^am\s.+schrieb.+:\s*$', re.IGNORECASE),
-        ]
-        lines = body.splitlines()
-        for idx, line in enumerate(lines):
-            trimmed = line.strip().lower()
-            if not trimmed:
-                continue
-            if trimmed.startswith('>'):
-                candidate = '\n'.join(lines[:idx]).strip()
-                if candidate:
-                    return candidate
-                continue
-            for marker in markers:
-                if trimmed.startswith(marker):
-                    candidate = '\n'.join(lines[:idx]).strip()
-                    if candidate:
-                        return candidate
-                    continue
-            if any(pattern.match(trimmed) for pattern in reply_header_patterns):
-                candidate = '\n'.join(lines[:idx]).strip()
-                if candidate:
-                    return candidate
-                continue
-            if trimmed.startswith(header_block_prefixes):
-                next_lines = [
-                    (lines[idx + offset].strip().lower() if idx + offset < len(lines) else '')
-                    for offset in (1, 2, 3)
-                ]
-                if any(next_line.startswith(header_block_prefixes) for next_line in next_lines if next_line):
-                    candidate = '\n'.join(lines[:idx]).strip()
-                    if candidate:
-                        return candidate
-                    continue
-        return body.strip()
-    
     @staticmethod
     def _extract_summary_from_ics(ics_content: str) -> Optional[str]:
-        """Extract SUMMARY property from iCalendar (.ics) content if available.
-
-        Args:
-            ics_content: Raw iCalendar file content.
-
-        Returns:
-            Extracted and unescaped SUMMARY string, or None if not found.
-        """
-        if not ics_content:
-            return None
-        for line in ics_content.splitlines():
-            if line.startswith("SUMMARY:"):
-                raw_summary = line[len("SUMMARY:"):].strip()
-                summary = (
-                    raw_summary.replace(r"\n", "\n")
-                    .replace(r"\N", "\n")
-                    .replace(r"\,", ",")
-                    .replace(r"\;", ";")
-                    .replace(r"\\", "\\")
-                )
-                return summary.strip() or None
-        return None
+        """Extract ``SUMMARY`` property from iCalendar (.ics) content if available."""
+        return extract_summary_from_ics(ics_content)
 
     def send_reply_with_calendar(
         self,
         original_email: Dict,
-        ics_content: str, 
+        ics_content: str,
         reply_message: str = "I've created a calendar invite for this event.",
         dry_run: bool = False,
         event_data: Optional[Dict] = None,
@@ -301,21 +309,12 @@ class EmailClient:
             Dictionary containing send result status, recipients, protocol, and subject.
         """
         try:
-            # Determine appropriate event title for the subject line
-            resolved_title = (
-                (event_title or '').strip()
-                or ((event_data.get('title') if event_data else '') or '').strip()
-                or (original_email.get('event_title') or '').strip()
+            subject_line = resolve_invite_subject(
+                original_email,
+                ics_content,
+                event_data=event_data,
+                event_title=event_title,
             )
-            if not resolved_title and ics_content:
-                resolved_title = self._extract_summary_from_ics(ics_content)
-
-            subject_line = format_invite_subject(resolved_title, original_email.get('subject'))
-
-            # Build a mixed container so we can include both inline calendar part and a file attachment
-            msg = MIMEMultipart('mixed')
-            msg['From'] = self.email_address
-            msg['Subject'] = subject_line
 
             recipients = original_email.get('recipients') or []
             if not recipients:
@@ -330,39 +329,15 @@ class EmailClient:
                 logger.warning(message)
                 raise RuntimeError(message)
 
-            msg['To'] = ', '.join(recipients)
-            
-            # Add threading headers to keep it in the same conversation
-            if original_email.get('message_id'):
-                clean_mid = re.sub(r'[\r\n\x00]+', '', str(original_email['message_id'])).strip()
-                if clean_mid:
-                    msg['In-Reply-To'] = clean_mid
-                    msg['References'] = clean_mid
-            
-            # Multipart/alternative keeps text, HTML, and calendar inline so Outlook can surface buttons
-            alt = MIMEMultipart('alternative')
-            msg.attach(alt)
+            msg = build_calendar_mime_message(
+                sender=self.email_address,
+                recipients=recipients,
+                subject=subject_line,
+                reply_message=reply_message,
+                ics_content=ics_content,
+                in_reply_to=original_email.get('message_id'),
+            )
 
-            # Plain/text version
-            alt.attach(MIMEText(reply_message, 'plain', 'utf-8'))
-
-            # HTML version with preserved line breaks
-            alt.attach(MIMEText(build_reply_message_html_from_text(reply_message), 'html', 'utf-8'))
-
-            # Inline calendar part (critical for Outlook meeting actions)
-            calendar_part = MIMEText(ics_content, 'calendar', 'utf-8')
-            calendar_part.replace_header('Content-Type', 'text/calendar; method=REQUEST; charset="UTF-8"')
-            calendar_part.add_header('Content-Disposition', 'inline')
-            calendar_part.add_header('Content-Class', 'urn:content-classes:calendarmessage')
-            alt.attach(calendar_part)
-
-            # Add a separate attachment so non-Outlook clients can save the .ics
-            ics_attachment = MIMEBase('text', 'calendar', method='REQUEST', name='invite.ics')
-            ics_attachment.set_payload(ics_content)
-            encoders.encode_base64(ics_attachment)
-            ics_attachment.add_header('Content-Disposition', 'attachment', filename='invite.ics')
-            msg.attach(ics_attachment)
-            
             result = {
                 'recipients': recipients,
                 'dry_run': bool(dry_run),
@@ -382,19 +357,12 @@ class EmailClient:
                 logger.info("=" * 60)
                 result['status'] = 'dry_run_preview'
                 return result
-            
-            # Persist MIME for debugging
-            if getattr(config, 'ENABLE_DEBUG_DUMPS', False):
-                try:
-                    dump_dir = Path(config.RESULTS_DB_PATH).parent if hasattr(config, 'RESULTS_DB_PATH') else Path('.')
-                    dump_path = dump_dir / f"outbound_invite_{datetime.utcnow().strftime('%Y%m%d_%H%M%S%f')}.eml"
-                    dump_path.write_bytes(msg.as_bytes())
-                    logger.info("Saved outbound MIME to %s", dump_path)
-                except Exception as exc:
-                    logger.warning("Failed to save outbound MIME: %s", exc)
+
+            save_outbound_mime_dump(msg.as_bytes(), prefix="outbound_invite")
 
             # Send email (handle implicit SSL vs STARTTLS) with verified TLS
             ssl_ctx = self._create_ssl_context()
+            server: Union[smtplib.SMTP, smtplib.SMTP_SSL]
             if self.smtp_port == 465:
                 server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=ssl_ctx)
             else:
@@ -403,11 +371,11 @@ class EmailClient:
             server.login(self.email_address, self.email_password)
             server.send_message(msg)
             server.quit()
-            
+
             result['status'] = 'sent'
             logger.info("Reply sent successfully to %s", ', '.join(recipients))
             return result
-            
+
         except Exception as e:
             logger.error(f"Error sending reply: {e}")
             raise
@@ -432,40 +400,9 @@ class EmailClient:
                 recipients.append(sender_addr)
         return recipients
 
-    _EMAIL_ADDRESS_RE = re.compile(r"^[^@\s\x00-\x1f\x7f]+@[^@\s\x00-\x1f\x7f]+\.[^@\s\x00-\x1f\x7f]+$")
-
     def _filter_allowed_recipients(self, recipients: List[str]) -> List[str]:
-        """Validate recipient email addresses and optionally enforce internal domain policy.
-
-        Args:
-            recipients: Raw recipient strings or address headers.
-
-        Returns:
-            Deduplicated list of syntactically valid, permitted email addresses.
-        """
-        if not recipients:
-            return []
-        enforce_domain = bool(getattr(config, 'ENFORCE_INTERNAL_RECIPIENT_DOMAIN', False))
-        internal_domain = (getattr(config, 'INTERNAL_EMAIL_DOMAIN', '') or '').strip().lower()
-        self_addr = (self.email_address or '').strip().lower()
-
-        allowed = []
-        for addr in recipients:
-            if not isinstance(addr, str) or any(ch in addr for ch in ('\r', '\n', '\x00')):
-                continue
-            parsed = parseaddr(addr)[1].strip()
-            if not parsed or not self._EMAIL_ADDRESS_RE.fullmatch(parsed):
-                continue
-            if enforce_domain and internal_domain and internal_domain != 'example.com':
-                lowered = parsed.lower()
-                if lowered != self_addr:
-                    dom = lowered.split('@', 1)[1]
-                    if dom != internal_domain and not dom.endswith(f'.{internal_domain}'):
-                        logger.warning("Blocked external recipient %s due to ENFORCE_INTERNAL_RECIPIENT_DOMAIN", parsed)
-                        continue
-            if parsed not in allowed:
-                allowed.append(parsed)
-        return allowed
+        """Validate recipient email addresses and optionally enforce internal domain policy."""
+        return filter_allowed_recipients(recipients, self_email=getattr(self, 'email_address', ''))
 
     @staticmethod
     def _escape_imap_quoted(value: str) -> str:
@@ -518,55 +455,67 @@ class EmailClient:
             else:
                 candidates_to_try.append(f'"{self._escape_imap_quoted(f"<{clean_id}>")}"')
 
-            matching_nums = []
+            matching_uids = []
             for query_val in candidates_to_try:
-                status, nums = mail.search(None, f'HEADER Message-ID {query_val}')
+                status, nums = mail.uid('search', None, f'HEADER Message-ID {query_val}')
                 if status == 'OK' and nums and nums[0].split():
-                    matching_nums = nums[0].split()
+                    matching_uids = nums[0].split()
                     break
 
-            if not matching_nums:
+            if not matching_uids:
                 logger.warning("No email found in IMAP inbox with Message-ID: %s", message_id)
                 return None
 
-            email_id_str = matching_nums[-1].decode()
-            _, msg_data = mail.fetch(email_id_str, '(BODY.PEEK[])')
+            uid_str = matching_uids[-1].decode()
+            _, msg_data = mail.uid('fetch', uid_str, '(BODY.PEEK[])')
+            raw_bytes = self._extract_fetch_payload(msg_data)
+            if raw_bytes:
+                msg = email.message_from_bytes(raw_bytes)
+                subject = msg['subject']
+                sender = msg['from']
+                date = msg['date']
+                msg_id = msg['message-id']
 
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    subject = msg['subject']
-                    sender = msg['from']
-                    date = msg['date']
-                    msg_id = msg['message-id']
+                body = self._strip_reply_trail(self._get_email_body(msg), subject=subject)
+                attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
+                if attachment_text:
+                    body = f"{body}\n\n{attachment_text}" if body else attachment_text
 
-                    body = self._strip_reply_trail(self._get_email_body(msg), subject=subject)
-                    attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
-                    if attachment_text:
-                        body = f"{body}\n\n{attachment_text}" if body else attachment_text
-
-                    recipients = self._extract_recipients(msg)
-                    timestamp = normalize_timestamp(date)
-                    body_hash = fingerprint_body(body)
-                    hashed_id = generate_email_id(
-                        message_id=msg_id or email_id_str,
+                recipients = self._extract_recipients(msg)
+                timestamp = normalize_timestamp(date)
+                body_hash = fingerprint_body(body)
+                legacy_id = generate_email_id(
+                    message_id=msg_id or uid_str,
+                    timestamp=timestamp or date,
+                    sender=sender,
+                    subject=subject,
+                    body_hash=body_hash,
+                )
+                resolved_id = (
+                    generate_stable_email_id(
+                        message_id=msg_id,
                         timestamp=timestamp or date,
                         sender=sender,
                         subject=subject,
                         body_hash=body_hash,
                     )
+                    if normalize_message_id(msg_id)
+                    else legacy_id
+                )
 
-                    return {
-                        'id': hashed_id,
-                        'source_id': email_id_str,
-                        'message_id': msg_id or message_id,
-                        'subject': subject,
-                        'sender': sender,
-                        'date': timestamp or date,
-                        'body': body,
-                        'original_msg': msg,
-                        'recipients': recipients,
-                    }
+                return {
+                    'id': resolved_id,
+                    'legacy_id': legacy_id,
+                    'source_id': uid_str,
+                    'uid': uid_str,
+                    'message_id': msg_id or message_id,
+                    'subject': subject,
+                    'sender': sender,
+                    'date': timestamp or date,
+                    'body': body,
+                    'original_msg': msg,
+                    'recipients': recipients,
+                }
             return None
         except Exception as e:
             logger.error("Error fetching email by Message-ID %s: %s", message_id, e)
@@ -612,96 +561,111 @@ class EmailClient:
         if message_id:
             try:
                 data = self.fetch_email_by_message_id(message_id)
-                clean_target_mid = (message_id or '').strip().strip('<>')
-                fetched_mid = (data.get('message_id') or '').strip().strip('<>') if data else ''
-                if data and (data.get('id') == email_id or not email_id or (clean_target_mid and fetched_mid == clean_target_mid)):
+                clean_target_mid = normalize_message_id(message_id)
+                fetched_mid = normalize_message_id(data.get('message_id')) if data else ''
+                if data and (
+                    data.get('id') == email_id
+                    or data.get('legacy_id') == email_id
+                    or not email_id
+                    or (clean_target_mid and fetched_mid == clean_target_mid)
+                ):
                     return data
             except Exception as exc:
                 logger.warning("Direct message_id fetch failed during fetch_email_by_id: %s", exc)
 
-        # 2. Scan recent emails in inbox to match by deterministic hash
+        # 2. Scan recent emails in inbox by IMAP UID to match by deterministic hash
+        mail = None
         try:
             mail = self.connect_imap()
             mail.select('INBOX')
-            _, message_numbers = mail.search(None, 'ALL')
+            _, uid_numbers = mail.uid('search', None, 'ALL')
 
-            if not message_numbers or not message_numbers[0]:
-                try:
-                    mail.close()
-                    mail.logout()
-                except Exception:
-                    pass
+            if not uid_numbers or not uid_numbers[0]:
                 return None
 
-            email_ids = [msg_id.decode() for msg_id in message_numbers[0].split()]
-            email_ids.reverse()  # newest first
-            batch_ids = email_ids[:max_search]
+            uids = [uid.decode() for uid in uid_numbers[0].split()]
+            uids.reverse()  # newest first
+            batch_uids = uids[:max_search]
             fallback_match = None
 
-            for email_id_str in batch_ids:
-                _, msg_data = mail.fetch(email_id_str, '(BODY.PEEK[])')
+            for uid_str in batch_uids:
+                _, msg_data = mail.uid('fetch', uid_str, '(BODY.PEEK[])')
+                raw_bytes = self._extract_fetch_payload(msg_data)
+                if not raw_bytes:
+                    continue
 
-                for response_part in msg_data:
-                    if isinstance(response_part, tuple):
-                        msg = email.message_from_bytes(response_part[1])
-                        msg_subj = msg['subject']
-                        msg_from = msg['from']
-                        msg_date = msg['date']
-                        msg_id = msg['message-id']
+                msg = email.message_from_bytes(raw_bytes)
+                msg_subj = msg['subject']
+                msg_from = msg['from']
+                msg_date = msg['date']
+                msg_id = msg['message-id']
 
-                        body = self._strip_reply_trail(self._get_email_body(msg), subject=msg_subj or subject)
-                        attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
-                        if attachment_text:
-                            body = f"{body}\n\n{attachment_text}" if body else attachment_text
+                body = self._strip_reply_trail(self._get_email_body(msg), subject=msg_subj or subject)
+                attachment_text = self.attachment_extractor.extract_from_mime_message(msg)
+                if attachment_text:
+                    body = f"{body}\n\n{attachment_text}" if body else attachment_text
 
-                        recipients = self._extract_recipients(msg)
-                        timestamp = normalize_timestamp(msg_date)
-                        body_hash = fingerprint_body(body)
-                        hashed_id = generate_email_id(
-                            message_id=msg_id or email_id_str,
-                            timestamp=timestamp or msg_date,
-                            sender=msg_from,
-                            subject=msg_subj,
-                            body_hash=body_hash,
-                        )
+                recipients = self._extract_recipients(msg)
+                timestamp = normalize_timestamp(msg_date)
+                body_hash = fingerprint_body(body)
+                legacy_id = generate_email_id(
+                    message_id=msg_id or uid_str,
+                    timestamp=timestamp or msg_date,
+                    sender=msg_from,
+                    subject=msg_subj,
+                    body_hash=body_hash,
+                )
+                resolved_id = (
+                    generate_stable_email_id(
+                        message_id=msg_id,
+                        timestamp=timestamp or msg_date,
+                        sender=msg_from,
+                        subject=msg_subj,
+                        body_hash=body_hash,
+                    )
+                    if normalize_message_id(msg_id)
+                    else legacy_id
+                )
 
-                        email_dict = {
-                            'id': hashed_id,
-                            'source_id': email_id_str,
-                            'message_id': msg_id or email_id_str,
-                            'subject': msg_subj,
-                            'sender': msg_from,
-                            'date': timestamp or msg_date,
-                            'body': body,
-                            'original_msg': msg,
-                            'recipients': recipients,
-                        }
+                email_dict = {
+                    'id': resolved_id,
+                    'legacy_id': legacy_id,
+                    'source_id': uid_str,
+                    'uid': uid_str,
+                    'message_id': msg_id or uid_str,
+                    'subject': msg_subj,
+                    'sender': msg_from,
+                    'date': timestamp or msg_date,
+                    'body': body,
+                    'original_msg': msg,
+                    'recipients': recipients,
+                }
 
-                        if hashed_id == email_id:
-                            try:
-                                mail.close()
-                                mail.logout()
-                            except Exception:
-                                pass
-                            return email_dict
+                if resolved_id == email_id or legacy_id == email_id:
+                    return email_dict
 
-                        if message_id and msg_id:
-                            c1 = (message_id or '').strip().strip('<>')
-                            c2 = (msg_id or '').strip().strip('<>')
-                            if c1 and c1 == c2 and not fallback_match:
-                                fallback_match = email_dict
+                if message_id and msg_id:
+                    c1 = normalize_message_id(message_id)
+                    c2 = normalize_message_id(msg_id)
+                    if c1 and c1 == c2 and not fallback_match:
+                        fallback_match = email_dict
 
-                        if subject and sender and not fallback_match:
-                            if (msg_subj or '').strip() == (subject or '').strip() and (msg_from or '').strip().lower() == (sender or '').strip().lower():
-                                fallback_match = email_dict
+                if subject and sender and not fallback_match:
+                    if (msg_subj or '').strip() == (subject or '').strip() and (msg_from or '').strip().lower() == (sender or '').strip().lower():
+                        fallback_match = email_dict
 
-            try:
-                mail.close()
-                mail.logout()
-            except Exception:
-                pass
             return fallback_match
         except Exception as exc:
             logger.error("Error scanning IMAP inbox for email %s: %s", email_id, exc)
             return None
+        finally:
+            if mail is not None:
+                try:
+                    mail.close()
+                except Exception:
+                    pass
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
 

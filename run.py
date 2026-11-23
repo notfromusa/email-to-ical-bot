@@ -1,110 +1,80 @@
 #!/usr/bin/env python3
-"""
-Run iCal Bot with Web UI
-Starts both the email processing bot and the monitoring web interface
-"""
+"""Run iCal Bot alongside the Waitress-hosted monitoring Web UI."""
 
-import sys
-import threading
-import time
+from __future__ import annotations
+
 import logging
+import signal
+import sys
 
 import config
-from main import iCalBot
-from web_ui import run_web_ui
+from ical_bot.runtime import BotRuntime, serve_wsgi
+from web_ui import create_wsgi_app, runtime
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Suppress verbose HTTP request access logs from Werkzeug
+# Suppress verbose HTTP request access logs from Werkzeug/Waitress
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-
-import signal
-from workload_monitor import get_workload_monitor
-
-active_bot = None
+active_runtime: BotRuntime = runtime
 
 
-def run_bot(once=False):
-    """Run the bot in a separate thread"""
-    global active_bot
-    active_bot = iCalBot()
+def run_bot(once: bool = False) -> None:
+    """Run the bot directly without starting the HTTP UI server.
+
+    Args:
+        once: When True, execute a single inbox check and exit.
+    """
     if once:
-        active_bot.run_once()
+        active_runtime.run_check_once(blocking=True)
     else:
-        active_bot.run_continuous()
+        active_runtime.start_background_polling()
+        try:
+            while True:
+                signal.pause()
+        except (AttributeError, KeyboardInterrupt, SystemExit):
+            active_runtime.stop()
 
 
-def wait_for_credentials_and_start():
-    """Wait for mailbox credentials to be set via web UI, then start bot."""
-    logger.info("Waiting for mailbox credentials via web UI...")
-    while not getattr(config, 'EMAIL_PASSWORD', ''):
-        time.sleep(1)
-    logger.info("Mailbox credentials received. Starting bot thread...")
-    run_bot(once=False)
+def main() -> None:
+    """Entry point coordinating single-run, headless worker, or combined UI mode."""
+    once = "--once" in sys.argv
+    no_web = "--no-web" in sys.argv
 
-
-def main():
-    """Main entry point"""
-    once = '--once' in sys.argv
-    no_web = '--no-web' in sys.argv
-    
     if config.DRY_RUN:
         logger.warning("=" * 60)
         logger.warning("DRY RUN MODE ENABLED")
         logger.warning("Emails will NOT be sent - only previewed")
         logger.warning("To disable: Set DRY_RUN=false in .env")
         logger.warning("=" * 60)
-    
+
+    def handle_shutdown(signum, frame) -> None:
+        del frame
+        logger.info("Signal %s received. Shutting down gracefully...", signum)
+        active_runtime.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
+
     if no_web or once:
-        # Run bot only
         logger.info("Starting bot without web UI")
         run_bot(once=once)
-    else:
-        # Run both bot and web UI
-        logger.info("Starting iCal Bot with Web UI...")
-        logger.info(f"Web UI will be available at: http://{config.WEB_UI_HOST}:{config.WEB_UI_PORT}")
-        
-        if getattr(config, 'EMAIL_PASSWORD', ''):
-            # Start bot in background thread
-            bot_thread = threading.Thread(target=run_bot, daemon=True)
-            bot_thread.start()
-        else:
-            # Wait for credentials before starting
-            waiter_thread = threading.Thread(target=wait_for_credentials_and_start, daemon=True)
-            waiter_thread.start()
-        
-        # Give bot a moment to start
-        time.sleep(2)
-        
-        def handle_shutdown(signum, frame):
-            logger.info("Signal %s received. Shutting down gracefully...", signum)
-            if active_bot:
-                active_bot.stop()
-            try:
-                get_workload_monitor().unload_model()
-            except Exception:
-                pass
-            sys.exit(0)
+        return
 
-        signal.signal(signal.SIGTERM, handle_shutdown)
-        signal.signal(signal.SIGINT, handle_shutdown)
+    logger.info("Starting iCal Bot with Web UI...")
+    logger.info("Web UI will be available at: http://%s:%s", config.WEB_UI_HOST, config.WEB_UI_PORT)
 
-        # Start web UI in main thread
-        try:
-            run_web_ui()
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("\nShutting down...")
-            if active_bot:
-                active_bot.stop()
-            try:
-                get_workload_monitor().unload_model()
-            except Exception:
-                pass
+    wsgi_app = create_wsgi_app(start_bot=True)
+    try:
+        serve_wsgi(wsgi_app, config.WEB_UI_HOST, config.WEB_UI_PORT)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Shutting down...")
+        active_runtime.stop()
 
 
 if __name__ == "__main__":

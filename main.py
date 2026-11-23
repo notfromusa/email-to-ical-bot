@@ -5,6 +5,7 @@ This bot monitors your email inbox, uses a local LLM to detect event description
 and automatically creates and sends calendar invites as email replies.
 """
 
+import inspect
 import time
 import json
 import logging
@@ -62,21 +63,39 @@ class ProcessingResult:
 
 
 class iCalBot:
-    def __init__(self):
-        # Choose email client based on protocol
-        if config.EMAIL_PROTOCOL == "EXCHANGE":
+    """Orchestrator for fetching emails, analyzing events via LLM, and sending invites."""
+
+    def __init__(
+        self,
+        *,
+        storage: Optional[StorageManager] = None,
+        email_client: Optional[Any] = None,
+        llm_client: Optional[Any] = None,
+        calendar_generator: Optional[Any] = None,
+    ) -> None:
+        """Initialize iCalBot with optional injected dependencies.
+
+        Args:
+            storage: Optional :class:`StorageManager` instance.
+            email_client: Optional mail adapter instance (IMAP or Exchange).
+            llm_client: Optional LLM analysis client.
+            calendar_generator: Optional ICS calendar generator.
+        """
+        if email_client is not None:
+            self.email_client = email_client
+        elif config.EMAIL_PROTOCOL == "EXCHANGE":
             logger.info("Using Exchange Web Services (EWS)")
             self.email_client = ExchangeClient()
         else:
             logger.info("Using IMAP/SMTP")
             self.email_client = EmailClient()
-            
-        self.llm_client = LLMClient()
-        self.calendar_generator = CalendarGenerator()
+
+        self.llm_client = llm_client if llm_client is not None else LLMClient()
+        self.calendar_generator = calendar_generator if calendar_generator is not None else CalendarGenerator()
         self.processed_emails_file = Path(config.PROCESSED_EMAILS_FILE)
+        self.storage = storage if storage is not None else StorageManager(config.RESULTS_DB_PATH)
+        self.storage.import_legacy_processed_emails(self.processed_emails_file)
         self.processed_emails = self._load_processed_emails()
-        self.storage = StorageManager(config.RESULTS_DB_PATH)
-        self.processed_emails.update(self.storage.get_archived_email_ids())
         self.auto_approve_events = config.AUTO_APPROVE_EVENTS
 
         self.has_pending_retries: bool = False
@@ -113,15 +132,13 @@ class iCalBot:
         """
         recovered_ids: List[str] = []
         try:
-            with self.storage._connect() as conn:
-                rows = conn.execute(
-                    "SELECT email_id FROM processed_results WHERE status IN ('llm_yielding', 'llm_timeout') AND (sent = 0 OR sent IS NULL)"
-                ).fetchall()
-                for row in rows:
-                    eid = row[0]
-                    if eid in self.processed_emails:
-                        self.processed_emails.discard(eid)
-                        recovered_ids.append(eid)
+            pending_ids = self.storage.get_pending_retry_email_ids()
+            for eid in pending_ids:
+                was_present = eid in self.processed_emails
+                self.processed_emails.discard(eid)
+                self.storage.unmark_email_processed(eid)
+                if was_present:
+                    recovered_ids.append(eid)
             if recovered_ids:
                 self._save_processed_emails()
                 self.has_pending_retries = True
@@ -147,19 +164,15 @@ class iCalBot:
             "this event was generated automatically by ical bot",
         ]
         return any(marker in normalized for marker in markers)
-        
+
     def _load_processed_emails(self) -> Set[str]:
-        """Load the set of already processed email IDs"""
-        if self.processed_emails_file.exists():
-            try:
-                with open(self.processed_emails_file, 'r') as f:
-                    data = json.load(f)
-                    return set(data.get('processed_ids', []))
-            except Exception as e:
-                logger.error(f"Error loading processed emails: {e}")
-                return set()
-        return set()
-    
+        """Load the set of processed and archived email IDs from SQLite storage."""
+        try:
+            return self.storage.get_processed_email_ids()
+        except Exception as exc:
+            logger.error("Error loading processed emails from SQLite: %s", exc)
+            return set()
+
     def recover_null_llm_emails(self) -> List[str]:
         """Recover previously failed emails that had null LLM responses so they can be re-analyzed.
 
@@ -170,6 +183,7 @@ class iCalBot:
         if recovered_ids:
             for eid in recovered_ids:
                 self.processed_emails.discard(eid)
+                self.storage.unmark_email_processed(eid)
             self._save_processed_emails()
             logger.info(
                 "Recovered %d email(s) with null LLM responses for re-evaluation: %s",
@@ -178,13 +192,12 @@ class iCalBot:
             )
         return recovered_ids
 
-    def _save_processed_emails(self):
-        """Save the set of processed email IDs atomically with owner-only permissions."""
+    def _save_processed_emails(self) -> None:
+        """Persist any in-memory processed email IDs to the unified SQLite state table."""
         try:
-            payload = json.dumps({'processed_ids': list(self.processed_emails)})
-            config.write_private_file(self.processed_emails_file, payload)
-        except Exception as e:
-            logger.error(f"Error saving processed emails: {e}")
+            self.storage.mark_emails_processed(self.processed_emails)
+        except Exception as exc:
+            logger.error("Error saving processed emails to SQLite: %s", exc)
 
     @staticmethod
     def _has_external_recipients(recipients: List[str]) -> bool:
@@ -639,15 +652,34 @@ class iCalBot:
         include_processed = config.DRY_RUN and dry_run_target > 0
         offset = 0
         run_seen_ids = set()
-        
+        self.processed_emails = self._load_processed_emails()
+        processed_message_ids = self.storage.get_processed_message_ids()
+
         try:
             while True:
-                emails, has_more = self.email_client.fetch_unprocessed_emails(
+                fetch_fn = self.email_client.fetch_unprocessed_emails
+                fetch_kwargs: Dict[str, Any] = {
+                    "offset": offset,
+                    "skip_processed": not include_processed,
+                    "exclude_ids": run_seen_ids,
+                }
+                try:
+                    sig = inspect.signature(fetch_fn)
+                    if (
+                        "processed_message_ids" in sig.parameters
+                        or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in sig.parameters.values()
+                        )
+                    ):
+                        fetch_kwargs["processed_message_ids"] = processed_message_ids
+                except (TypeError, ValueError):
+                    pass
+
+                emails, has_more = fetch_fn(
                     self.processed_emails,
                     config.MAX_EMAILS_PER_CHECK,
-                    offset=offset,
-                    skip_processed=not include_processed,
-                    exclude_ids=run_seen_ids
+                    **fetch_kwargs,
                 )
 
                 logger.info(
@@ -670,6 +702,11 @@ class iCalBot:
                     result = self.process_email(email_data)
                     if result.mark_processed:
                         self.processed_emails.add(email_data['id'])
+                        self.storage.mark_email_processed(
+                            email_data['id'],
+                            message_id=email_data.get('message_id'),
+                            source_uid=email_data.get('source_id'),
+                        )
                     else:
                         logger.warning(
                             "Email '%s' (%s) status '%s' was NOT marked as processed. Will retry on next check cycle.",

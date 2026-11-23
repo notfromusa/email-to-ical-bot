@@ -12,16 +12,13 @@ Verifies:
 """
 
 import time
-import json
-import sqlite3
 import pytest
 from unittest.mock import patch, MagicMock
 import requests
 
 from workload_monitor import WorkloadMonitor, WorkloadYieldError, get_workload_monitor
-from llm_client import LLMClient, LLMError, LLMTimeoutError
+from llm_client import LLMClient, LLMTimeoutError
 from main import iCalBot, ProcessingResult
-from storage import StorageManager
 
 
 def test_whitelist_matching():

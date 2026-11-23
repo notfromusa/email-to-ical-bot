@@ -10,9 +10,7 @@ Validates:
 - Stable UID and SEQUENCE in calendar generator
 """
 
-from datetime import datetime
 from unittest.mock import MagicMock, patch
-import pytest
 from exchangelib import EWSTimeZone, EWSDateTime, Account
 from exchangelib.folders import Calendar
 from exchangelib.items import SEND_TO_ALL_AND_SAVE_COPY, SEND_TO_NONE

@@ -1,7 +1,6 @@
 """Unit tests for LLM error handling, retry mechanisms, and recovery of null responses."""
 
 import json
-import sqlite3
 import pytest
 from unittest.mock import patch, MagicMock
 import requests

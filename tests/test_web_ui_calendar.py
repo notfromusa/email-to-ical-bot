@@ -11,8 +11,7 @@ This module validates:
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import patch
 
 from web_ui import app, storage
 
@@ -49,51 +48,58 @@ def test_index_template_contains_calendar_view_elements():
 
 
 def test_index_template_contains_calendar_javascript_logic():
+    """Verify index.html links the modular frontend and includes calendar logic.
+
+    Verifies that ``templates/index.html`` loads ``js/app.js`` as an ES module
+    and that ``static/js/app.js`` and ``static/js/calendar.js`` expose the
+    calendar state variables, view switchers, and Outlook-style layout helpers.
     """
-    Verify that templates/index.html includes the required JavaScript logic
-    for calendar rendering, mutual exclusion, and Outlook-style weekly meeting layout.
-    """
-    templates_dir = Path(app.root_path) / "templates"
-    content = (templates_dir / "index.html").read_text(encoding="utf-8")
+    root_dir = Path(app.root_path)
+    index_html = (root_dir / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'type="module"' in index_html
+    assert "js/app.js" in index_html
+
+    app_js = (root_dir / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    calendar_js = (root_dir / "static" / "js" / "calendar.js").read_text(encoding="utf-8")
 
     # State variables & defaults
-    assert "currentViewMode" in content
-    assert "currentCalendarSubView" in content
-    assert "currentCalendarDate" in content
-    assert "cachedEvents" in content
+    assert "currentViewMode" in app_js
+    assert "currentCalendarSubView" in app_js
+    assert "currentCalendarDate" in app_js
+    assert "cachedEvents" in app_js
 
     # View switching and mutual exclusion
-    assert "function setViewMode(" in content
-    assert "function updateViewModeUI(" in content
-    assert "function setCalendarSubView(" in content
-    assert "function renderActiveView(" in content
+    assert "function setViewMode(" in app_js
+    assert "function updateViewModeUI(" in app_js
+    assert "function setCalendarSubView(" in app_js
+    assert "function renderActiveView(" in app_js
 
     # Calendar rendering logic
-    assert "function renderCalendarMonth(" in content
-    assert "function renderCalendarWeek(" in content
-    assert "function layoutDayEvents(" in content
-    assert "function formatDuration(" in content
-    assert "function getCalendarEvents(" in content
-    assert "function parseEventDate(" in content
+    assert "function renderCalendarMonth(" in calendar_js
+    assert "function renderCalendarWeek(" in calendar_js
+    assert "function layoutDayEvents(" in calendar_js
+    assert "function formatDuration(" in calendar_js
+    assert "function getCalendarEvents(" in calendar_js
+    assert "function parseEventDate(" in calendar_js
 
 
 def test_index_template_styles_include_calendar_classes():
-    """
-    Verify that the stylesheet in index.html defines classes for Outlook-style
-    proportional meeting blocks, hour grids, and month cells.
-    """
-    templates_dir = Path(app.root_path) / "templates"
-    content = (templates_dir / "index.html").read_text(encoding="utf-8")
+    """Verify index.html links external CSS and calendar classes exist in app.css."""
+    root_dir = Path(app.root_path)
+    index_html = (root_dir / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "css/app.css" in index_html
+    assert "<style" not in index_html.lower()
 
-    assert ".calendar-toolbar" in content
-    assert ".calendar-month-grid" in content
-    assert ".cal-month-cell" in content
-    assert ".cal-event-pill" in content
-    assert ".calendar-week-grid-wrapper" in content
-    assert ".cal-week-time-grid" in content
-    assert ".cal-week-hour-slot" in content
-    assert ".cal-week-event-card" in content
-    assert ".cal-current-time-line" in content
+    app_css = (root_dir / "static" / "css" / "app.css").read_text(encoding="utf-8")
+    assert ".calendar-toolbar" in app_css
+    assert ".calendar-month-grid" in app_css
+    assert ".cal-month-cell" in app_css
+    assert ".cal-event-pill" in app_css
+    assert ".calendar-week-grid-wrapper" in app_css
+    assert ".cal-week-time-grid" in app_css
+    assert ".cal-week-hour-slot" in app_css
+    assert ".cal-week-event-card" in app_css
+    assert ".cal-current-time-line" in app_css
 
 
 def test_api_events_provides_calendar_dates_and_candidates():

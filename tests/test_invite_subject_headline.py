@@ -7,9 +7,7 @@ inheriting the generic parent message subject.
 """
 
 from unittest.mock import MagicMock, patch
-import pytest
 
-import config
 from email_client import EmailClient
 from exchange_client import ExchangeClient
 from messaging import format_invite_subject

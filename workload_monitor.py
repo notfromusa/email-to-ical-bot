@@ -16,14 +16,12 @@ References:
 """
 
 import os
-import re
-import sys
 import time
 import shutil
 import logging
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Set
+from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -465,10 +463,10 @@ class WorkloadMonitor:
         Returns:
             bool: True if the model is currently resident in VRAM, False otherwise.
         """
-        target_model = model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b")
-        endpoint = getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/generate")
+        target_model = str(model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b") or "gemma4-hermes:31b")
+        endpoint = str(getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/chat") or "http://localhost:11434/api/chat")
         self._validate_llm_endpoint(endpoint)
-        base_url = endpoint.rsplit("/", 1)[0]
+        base_url = endpoint.rstrip("/").rsplit("/", 1)[0]
         ps_url = f"{base_url}/ps"
 
         try:
@@ -500,12 +498,12 @@ class WorkloadMonitor:
         Returns:
             bool: True if model unload succeeded, False otherwise.
         """
-        target_model = model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b")
-        endpoint = getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/generate")
+        target_model = str(model_name or getattr(config, "LLM_MODEL", "gemma4-hermes:31b") or "gemma4-hermes:31b")
+        endpoint = str(getattr(config, "LLM_ENDPOINT", "http://localhost:11434/api/chat") or "http://localhost:11434/api/chat")
         self._validate_llm_endpoint(endpoint)
 
         # Determine base URL for Ollama API
-        base_url = endpoint.rsplit("/", 1)[0]
+        base_url = endpoint.rstrip("/").rsplit("/", 1)[0]
         unload_url = f"{base_url}/generate"
 
         logger.info(

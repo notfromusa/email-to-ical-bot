@@ -9,13 +9,12 @@ Covers:
 """
 
 import json
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import patch
 
 from email_client import EmailClient
 from exchange_client import ExchangeClient
 from identifiers import is_forwarded_email
-from llm_client import LLMClient, LLMError
+from llm_client import LLMClient
 from web_ui import app, storage
 
 
@@ -274,6 +273,7 @@ class TestWebUIRescanEndpoint:
 
     def test_api_rescan_event_with_double_check_no_event(self, tmp_path):
         """Rescan with double-check concluding no event should return 200 with no_event record."""
+        storage.rebind(str(tmp_path / "rescan_with_event.db"))
         test_email_id = "msg_test_rescan_123"
 
         # Record a dummy result in DB to be rescanned
@@ -344,8 +344,9 @@ class TestWebUIRescanEndpoint:
                 assert call_kwargs.get("rescan_hint") == "Look for doctorate talk"
                 assert call_kwargs.get("double_check") is True
 
-    def test_api_rescan_event_when_no_event_detected_returns_200_no_event(self):
+    def test_api_rescan_event_when_no_event_detected_returns_200_no_event(self, tmp_path):
         """When rescan concludes no event exists, it should update record to no_event without 500 error."""
+        storage.rebind(str(tmp_path / "rescan_no_event.db"))
         test_email_id = "msg_test_rescan_no_event"
 
         storage.record_result(

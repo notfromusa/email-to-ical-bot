@@ -14,25 +14,36 @@ from exchangelib import (
     EWSTimeZone,
     EWSDateTime,
     CalendarItem,
-    Attendee,
 )
 from exchangelib.items import SEND_TO_ALL_AND_SAVE_COPY, SEND_TO_NONE
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 import re
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from email.utils import parseaddr
 # from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
-from typing import List, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import logging
 
 import config
 from attachment_parser import AttachmentExtractor
-from identifiers import generate_email_id, fingerprint_body, normalize_timestamp, is_forwarded_email
-from messaging import build_calendar_description, build_reply_message_html_from_text, format_invite_subject
+from ical_bot.mail.common import (
+    build_calendar_mime_message,
+    extract_field_from_ics,
+    extract_summary_from_ics,
+    filter_allowed_recipients,
+    resolve_invite_subject,
+    sanitize_header_id,
+    save_outbound_mime_dump,
+    strip_reply_trail,
+)
+from ical_bot.time_utils import parse_iso_datetime
+from identifiers import (
+    fingerprint_body,
+    generate_email_id,
+    generate_stable_email_id,
+    normalize_message_id,
+    normalize_timestamp,
+)
+from messaging import build_calendar_description
 
 
 class SuppressNaiveDatetimeFilter(logging.Filter):
@@ -169,29 +180,34 @@ class ExchangeClient:
     
     def fetch_unprocessed_emails(
         self,
-        processed_ids: set,
+        processed_ids: Set[str],
         max_emails: int = 10,
         *,
         offset: int = 0,
         skip_processed: bool = True,
-        exclude_ids: Optional[set] = None
-    ) -> Tuple[List[Dict], bool]:
-        """
-        Fetch unprocessed emails from inbox
-        
+        exclude_ids: Optional[Set[str]] = None,
+        processed_message_ids: Optional[Set[str]] = None,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Fetch unprocessed emails from the Exchange inbox.
+
+        Checks normalized ``Message-ID`` and header-derived stable email IDs
+        before calling ``attachment_extractor.extract_from_exchange_item()`` so
+        already-processed attachments are not downloaded or parsed redundantly.
+
         Args:
-            processed_ids: Set of email IDs that have already been processed
-            max_emails: Maximum number of emails to fetch
-            offset: Batch offset (0 = newest batch)
-            skip_processed: If True, exclude already processed IDs
-            exclude_ids: Additional IDs to exclude this run
-            
+            processed_ids: Set of hashed email IDs already processed.
+            max_emails: Maximum number of inbox items in this batch slice.
+            offset: Batch offset (0 = newest batch).
+            skip_processed: If True, skip items already seen by ID or Message-ID.
+            exclude_ids: Additional IDs to ignore for the current run.
+            processed_message_ids: Normalized RFC 5322 Message-IDs already processed.
+
         Returns:
-            Tuple of (email list, has_more flag)
+            Tuple of ``(email list, has_more flag)``.
         """
-        emails = []
+        emails: List[Dict[str, Any]] = []
         has_more = False
-        
+
         try:
             start = offset * max_emails
             end = start + max_emails + 1
@@ -200,158 +216,99 @@ class ExchangeClient:
             if len(items) > max_emails:
                 has_more = True
                 items = items[:max_emails]
-            
+
             for item in items:
-                # Extract body text
+                timestamp = normalize_timestamp(item.datetime_received)
+                date_str = timestamp or (item.datetime_received.isoformat() if item.datetime_received else "")
+                item_subject = item.subject or "(No subject)"
+                item_sender = item.sender.email_address if item.sender else ""
+                norm_mid = normalize_message_id(item.message_id)
+
+                if skip_processed and processed_message_ids and norm_mid and norm_mid in processed_message_ids:
+                    continue
+
+                stable_id = (
+                    generate_stable_email_id(
+                        message_id=item.message_id,
+                        timestamp=date_str,
+                        sender=item_sender,
+                        subject=item_subject,
+                    )
+                    if norm_mid
+                    else None
+                )
+                if stable_id is not None:
+                    if exclude_ids and stable_id in exclude_ids:
+                        continue
+                    if skip_processed and stable_id in processed_ids:
+                        continue
+
+                # Extract body text & attachments only after header skip checks
                 body = ""
                 if item.text_body:
                     body = item.text_body
                 elif item.body:
-                    # If no text body, use HTML body (stripped)
                     from html import unescape
-                    import re
                     body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
                 body = self._strip_reply_trail(body, subject=item.subject)
                 attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
                 if attachment_text:
                     body = f"{body}\n\n{attachment_text}" if body else attachment_text
-                
-                recipients = self._extract_recipients(item)
 
-                timestamp = normalize_timestamp(item.datetime_received)
+                recipients = self._extract_recipients(item)
                 body_hash = fingerprint_body(body)
-                hashed_id = generate_email_id(
+                legacy_id = generate_email_id(
                     message_id=item.message_id,
-                    timestamp=timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
-                    sender=item.sender.email_address if item.sender else "",
-                    subject=item.subject or "(No subject)",
+                    timestamp=date_str,
+                    sender=item_sender,
+                    subject=item_subject,
                     body_hash=body_hash,
                 )
+                resolved_id = stable_id if stable_id is not None else legacy_id
 
-                if exclude_ids and hashed_id in exclude_ids:
+                if exclude_ids and (resolved_id in exclude_ids or legacy_id in exclude_ids):
                     continue
-                if skip_processed and hashed_id in processed_ids:
+                if skip_processed and (resolved_id in processed_ids or legacy_id in processed_ids):
                     continue
 
                 emails.append({
-                    'id': hashed_id,
+                    'id': resolved_id,
+                    'legacy_id': legacy_id,
                     'source_id': item.message_id,
                     'message_id': item.message_id,
-                    'subject': item.subject or "(No subject)",
-                    'sender': item.sender.email_address if item.sender else "Unknown",
-                    'date': timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                    'subject': item_subject,
+                    'sender': item_sender or "Unknown",
+                    'date': date_str,
                     'body': body,
                     'original_msg': item,
                     'recipients': recipients,
-                    'timestamp': timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                    'timestamp': date_str,
                 })
-                
-                logger.info(f"Fetched email: {item.subject} from {item.sender.email_address if item.sender else 'Unknown'}")
-                
+
+                logger.info(f"Fetched email: {item.subject} from {item_sender or 'Unknown'}")
+
                 if len(emails) >= max_emails:
                     break
-            
+
         except Exception as e:
             logger.error(f"Error fetching emails: {e}")
             raise
-        
+
         return emails, has_more
 
     def _strip_reply_trail(self, body: str, subject: Optional[str] = None) -> str:
-        """Remove quoted previous messages and reply headers for cleaner LLM input.
+        """Remove quoted previous messages and reply headers while preserving forwards."""
+        return strip_reply_trail(body, subject=subject)
 
-        Preserves forwarded emails intact so that forwarded events are not discarded.
-        """
-        if not body:
-            return body
-        if is_forwarded_email(subject=subject, body=body):
-            return body.strip()
-
-        markers = [
-            '-----original message-----',
-            '----- reply message -----',
-            '-----ursprüngliche nachricht-----',
-        ]
-        header_block_prefixes = ('from:', 'de:', 'von:', 'gesendet:', 'sent:', 'to:', 'an:', 'subject:', 'betreff:', 'cc:')
-        reply_header_patterns = [
-            re.compile(r'^on\s.+wrote:\s*$', re.IGNORECASE),
-            re.compile(r'^am\s.+schrieb.+:\s*$', re.IGNORECASE),
-        ]
-        lines = body.splitlines()
-        for idx, line in enumerate(lines):
-            trimmed = line.strip().lower()
-            if not trimmed:
-                continue
-            if trimmed.startswith('>'):
-                candidate = '\n'.join(lines[:idx]).strip()
-                if candidate:
-                    return candidate
-                continue
-            for marker in markers:
-                if trimmed.startswith(marker):
-                    candidate = '\n'.join(lines[:idx]).strip()
-                    if candidate:
-                        return candidate
-                    continue
-            if any(pattern.match(trimmed) for pattern in reply_header_patterns):
-                candidate = '\n'.join(lines[:idx]).strip()
-                if candidate:
-                    return candidate
-                continue
-            if trimmed.startswith(header_block_prefixes):
-                next_lines = [
-                    (lines[idx + offset].strip().lower() if idx + offset < len(lines) else '')
-                    for offset in (1, 2, 3)
-                ]
-                if any(next_line.startswith(header_block_prefixes) for next_line in next_lines if next_line):
-                    candidate = '\n'.join(lines[:idx]).strip()
-                    if candidate:
-                        return candidate
-                    continue
-        return body.strip()
-    
     @staticmethod
     def _extract_summary_from_ics(ics_content: str) -> Optional[str]:
-        """Extract SUMMARY property from iCalendar (.ics) content if available.
-
-        Args:
-            ics_content: Raw iCalendar file content.
-
-        Returns:
-            Extracted and unescaped SUMMARY string, or None if not found.
-        """
-        return ExchangeClient._extract_field_from_ics(ics_content, "SUMMARY")
+        """Extract ``SUMMARY`` property from iCalendar (.ics) content if available."""
+        return extract_summary_from_ics(ics_content)
 
     @staticmethod
     def _extract_field_from_ics(ics_content: str, field_name: str) -> Optional[str]:
-        """Extract a property value from iCalendar (.ics) content unfolded and unescaped.
-
-        Per RFC 5545 Section 3.1, long lines are folded with CRLF followed by space/tab.
-        Text values escape commas, semicolons, backslashes, and newlines (RFC 5545 Section 3.3.11).
-
-        Args:
-            ics_content: Raw iCalendar file content string.
-            field_name: The iCalendar property name to extract (e.g. DTSTART, SUMMARY, LOCATION).
-
-        Returns:
-            Extracted and unescaped property string, or None if not found.
-        """
-        if not ics_content or not field_name:
-            return None
-        pattern = rf"(?:^|\r?\n){field_name}(?:;[^:\r\n]*)?:([^\r\n]*(?:\r?\n[\t ][^\r\n]*)*)"
-        match = re.search(pattern, ics_content, re.IGNORECASE)
-        if not match:
-            return None
-        val = re.sub(r"\r?\n[\t ]", "", match.group(1))
-        return (
-            val.replace(r"\,", ",")
-            .replace(r"\;", ";")
-            .replace("\\\\", "\\")
-            .replace(r"\n", "\n")
-            .replace(r"\N", "\n")
-            .strip()
-            or None
-        )
+        """Extract an unfolded and unescaped property value from iCalendar (.ics) content."""
+        return extract_field_from_ics(ics_content, field_name)
 
     def _to_ews_datetime(self, dt_val, default_tz: EWSTimeZone) -> EWSDateTime:
         """Convert a datetime string or object into a timezone-aware EWSDateTime.
@@ -366,15 +323,10 @@ class ExchangeClient:
         if isinstance(dt_val, EWSDateTime):
             return dt_val.astimezone(default_tz)
         if isinstance(dt_val, str):
-            normalized = dt_val.strip().replace('Z', '+00:00')
-            if 'T' not in normalized and ' ' in normalized:
-                normalized = normalized.replace(' ', 'T', 1)
-            if len(normalized) == 16 and normalized[8] == 'T' and normalized.endswith('+00:00'):
-                dt_val = datetime.strptime(normalized, '%Y%m%dT%H%M%S+00:00').replace(tzinfo=timezone.utc)
-            elif len(normalized) == 15 and normalized[8] == 'T':
-                dt_val = datetime.strptime(normalized, '%Y%m%dT%H%M%S')
-            else:
-                dt_val = datetime.fromisoformat(normalized)
+            parsed = parse_iso_datetime(dt_val, default_tz=None)
+            if parsed is None:
+                raise ValueError(f"Cannot convert {dt_val} to EWSDateTime")
+            dt_val = parsed
         if isinstance(dt_val, datetime):
             if dt_val.tzinfo is None:
                 return default_tz.from_date(dt_val) if hasattr(default_tz, 'from_date') else EWSDateTime(
@@ -437,16 +389,12 @@ class ExchangeClient:
                 logger.warning(message)
                 raise RuntimeError(message)
 
-            # Determine appropriate event title for the subject line
-            resolved_title = (
-                (event_title or '').strip()
-                or ((event_data.get('title') if event_data else '') or '').strip()
-                or (original_email.get('event_title') or '').strip()
+            subject_line = resolve_invite_subject(
+                original_email,
+                ics_content,
+                event_data=event_data,
+                event_title=event_title,
             )
-            if not resolved_title and ics_content:
-                resolved_title = self._extract_summary_from_ics(ics_content)
-
-            subject_line = format_invite_subject(resolved_title, original_email.get('subject'))
 
             # Check if direct calendar creation is enabled (Option A)
             direct_calendar = getattr(config, 'EXCHANGE_DIRECT_CALENDAR_CREATION', True)
@@ -578,11 +526,10 @@ class ExchangeClient:
                                 subject=f"Added to Calendar: {subject_line}",
                                 body=reply_message,
                             )
-                            if original_email.get('message_id'):
-                                clean_mid = re.sub(r'[\r\n\x00]+', '', str(original_email['message_id'])).strip()
-                                if clean_mid:
-                                    conf_msg.in_reply_to = clean_mid
-                                    conf_msg.references = clean_mid
+                            clean_mid = sanitize_header_id(original_email.get('message_id'))
+                            if clean_mid:
+                                conf_msg.in_reply_to = clean_mid
+                                conf_msg.references = clean_mid
                             conf_msg.send()
                             result['message_id'] = getattr(conf_msg, 'message_id', result['message_id'])
                             logger.info("Confirmation email sent to %s", ', '.join(recipients))
@@ -615,34 +562,14 @@ class ExchangeClient:
                 return result
 
             # Build a MIME message with inline calendar so Outlook shows buttons
-            mime_msg = MIMEMultipart('mixed')
-            mime_msg['From'] = self.email_address
-            mime_msg['To'] = ', '.join(recipients)
-            mime_msg['Subject'] = subject_line
-
-            if original_email.get('message_id'):
-                clean_mid = re.sub(r'[\r\n\x00]+', '', str(original_email['message_id'])).strip()
-                if clean_mid:
-                    mime_msg['In-Reply-To'] = clean_mid
-                    mime_msg['References'] = clean_mid
-
-            alt = MIMEMultipart('alternative')
-            mime_msg.attach(alt)
-
-            alt.attach(MIMEText(reply_message, 'plain', 'utf-8'))
-            alt.attach(MIMEText(build_reply_message_html_from_text(reply_message), 'html', 'utf-8'))
-
-            calendar_part = MIMEText(ics_content, 'calendar', 'utf-8')
-            calendar_part.replace_header('Content-Type', 'text/calendar; method=REQUEST; charset="UTF-8"')
-            calendar_part.add_header('Content-Disposition', 'inline')
-            calendar_part.add_header('Content-Class', 'urn:content-classes:calendarmessage')
-            alt.attach(calendar_part)
-
-            ics_attachment = MIMEBase('text', 'calendar', method='REQUEST', name='invite.ics')
-            ics_attachment.set_payload(ics_content)
-            encoders.encode_base64(ics_attachment)
-            ics_attachment.add_header('Content-Disposition', 'attachment', filename='invite.ics')
-            mime_msg.attach(ics_attachment)
+            mime_msg = build_calendar_mime_message(
+                sender=self.email_address,
+                recipients=recipients,
+                subject=subject_line,
+                reply_message=reply_message,
+                ics_content=ics_content,
+                in_reply_to=original_email.get('message_id'),
+            )
 
             reply = Message(
                 account=self.account,
@@ -650,15 +577,7 @@ class ExchangeClient:
             )
             reply.mime_content = mime_msg.as_bytes()
 
-            # Persist MIME for debugging (opt-in)
-            if getattr(config, 'ENABLE_DEBUG_DUMPS', False):
-                try:
-                    dump_dir = Path(getattr(config, 'RESULTS_DB_PATH', '.') ).parent
-                    dump_path = dump_dir / f"outbound_invite_ews_{datetime.utcnow().strftime('%Y%m%d_%H%M%S%f')}.eml"
-                    dump_path.write_bytes(reply.mime_content)
-                    logger.info("Saved outbound EWS MIME to %s", dump_path)
-                except Exception as exc:
-                    logger.warning("Failed to save outbound EWS MIME: %s", exc)
+            save_outbound_mime_dump(reply.mime_content, prefix="outbound_invite_ews")
 
             reply.send()
             result['status'] = 'sent'
@@ -729,40 +648,9 @@ class ExchangeClient:
 
         return recipients
 
-    _EMAIL_ADDRESS_RE = re.compile(r"^[^@\s\x00-\x1f\x7f]+@[^@\s\x00-\x1f\x7f]+\.[^@\s\x00-\x1f\x7f]+$")
-
     def _filter_allowed_recipients(self, recipients: List[str]) -> List[str]:
-        """Validate recipient email addresses and optionally enforce internal domain policy.
-
-        Args:
-            recipients: Raw recipient strings or address headers.
-
-        Returns:
-            Deduplicated list of syntactically valid, permitted email addresses.
-        """
-        if not recipients:
-            return []
-        enforce_domain = bool(getattr(config, 'ENFORCE_INTERNAL_RECIPIENT_DOMAIN', False))
-        internal_domain = (getattr(config, 'INTERNAL_EMAIL_DOMAIN', '') or '').strip().lower()
-        self_addr = (getattr(self, 'email_address', '') or '').strip().lower()
-
-        allowed = []
-        for addr in recipients:
-            if not isinstance(addr, str) or any(ch in addr for ch in ('\r', '\n', '\x00')):
-                continue
-            parsed = parseaddr(addr)[1].strip()
-            if not parsed or not self._EMAIL_ADDRESS_RE.fullmatch(parsed):
-                continue
-            if enforce_domain and internal_domain and internal_domain != 'example.com':
-                lowered = parsed.lower()
-                if lowered != self_addr:
-                    dom = lowered.split('@', 1)[1]
-                    if dom != internal_domain and not dom.endswith(f'.{internal_domain}'):
-                        logger.warning("Blocked external recipient %s due to ENFORCE_INTERNAL_RECIPIENT_DOMAIN", parsed)
-                        continue
-            if parsed not in allowed:
-                allowed.append(parsed)
-        return allowed
+        """Validate recipient email addresses and optionally enforce internal domain policy."""
+        return filter_allowed_recipients(recipients, self_email=getattr(self, 'email_address', ''))
 
     def fetch_email_by_message_id(self, message_id: str) -> Optional[Dict]:
         """
@@ -794,21 +682,36 @@ class ExchangeClient:
 
             recipients = self._extract_recipients(item)
             timestamp = normalize_timestamp(item.datetime_received)
+            date_str = timestamp or (item.datetime_received.isoformat() if item.datetime_received else "")
+            item_subject = item.subject or "(No subject)"
+            item_sender = item.sender.email_address if item.sender else ""
             body_hash = fingerprint_body(body)
-            hashed_id = generate_email_id(
+            legacy_id = generate_email_id(
                 message_id=item.message_id,
-                timestamp=timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
-                sender=item.sender.email_address if item.sender else "",
-                subject=item.subject or "(No subject)",
+                timestamp=date_str,
+                sender=item_sender,
+                subject=item_subject,
                 body_hash=body_hash,
             )
+            resolved_id = (
+                generate_stable_email_id(
+                    message_id=item.message_id,
+                    timestamp=date_str,
+                    sender=item_sender,
+                    subject=item_subject,
+                    body_hash=body_hash,
+                )
+                if normalize_message_id(item.message_id)
+                else legacy_id
+            )
             return {
-                'id': hashed_id,
+                'id': resolved_id,
+                'legacy_id': legacy_id,
                 'source_id': item.message_id,
                 'message_id': item.message_id,
-                'subject': item.subject or "(No subject)",
-                'sender': item.sender.email_address if item.sender else "Unknown",
-                'date': timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                'subject': item_subject,
+                'sender': item_sender or "Unknown",
+                'date': date_str,
                 'body': body,
                 'original_msg': item,
                 'recipients': recipients,
@@ -847,9 +750,14 @@ class ExchangeClient:
         if message_id:
             try:
                 data = self.fetch_email_by_message_id(message_id)
-                clean_target_mid = (message_id or '').strip().strip('<>')
-                fetched_mid = (data.get('message_id') or '').strip().strip('<>') if data else ''
-                if data and (data.get('id') == email_id or not email_id or (clean_target_mid and fetched_mid == clean_target_mid)):
+                clean_target_mid = normalize_message_id(message_id)
+                fetched_mid = normalize_message_id(data.get('message_id')) if data else ''
+                if data and (
+                    data.get('id') == email_id
+                    or data.get('legacy_id') == email_id
+                    or not email_id
+                    or (clean_target_mid and fetched_mid == clean_target_mid)
+                ):
                     return data
             except Exception as exc:
                 logger.warning("Direct message_id fetch failed during fetch_email_by_id: %s", exc)
@@ -866,7 +774,6 @@ class ExchangeClient:
                     body = item.text_body
                 elif item.body:
                     from html import unescape
-                    import re
                     body = unescape(re.sub('<[^<]+?>', '', str(item.body)))
                 body = self._strip_reply_trail(body, subject=item.subject)
                 attachment_text = self.attachment_extractor.extract_from_exchange_item(item)
@@ -875,40 +782,54 @@ class ExchangeClient:
 
                 recipients = self._extract_recipients(item)
                 timestamp = normalize_timestamp(item.datetime_received)
+                date_str = timestamp or (item.datetime_received.isoformat() if item.datetime_received else "")
+                item_subject = item.subject or "(No subject)"
+                item_sender = item.sender.email_address if item.sender else ""
                 body_hash = fingerprint_body(body)
-                hashed_id = generate_email_id(
+                legacy_id = generate_email_id(
                     message_id=item.message_id,
-                    timestamp=timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
-                    sender=item.sender.email_address if item.sender else "",
-                    subject=item.subject or "(No subject)",
+                    timestamp=date_str,
+                    sender=item_sender,
+                    subject=item_subject,
                     body_hash=body_hash,
+                )
+                resolved_id = (
+                    generate_stable_email_id(
+                        message_id=item.message_id,
+                        timestamp=date_str,
+                        sender=item_sender,
+                        subject=item_subject,
+                        body_hash=body_hash,
+                    )
+                    if normalize_message_id(item.message_id)
+                    else legacy_id
                 )
 
                 email_dict = {
-                    'id': hashed_id,
+                    'id': resolved_id,
+                    'legacy_id': legacy_id,
                     'source_id': item.message_id,
                     'message_id': item.message_id,
-                    'subject': item.subject or "(No subject)",
-                    'sender': item.sender.email_address if item.sender else "Unknown",
-                    'date': timestamp or (item.datetime_received.isoformat() if item.datetime_received else ""),
+                    'subject': item_subject,
+                    'sender': item_sender or "Unknown",
+                    'date': date_str,
                     'body': body,
                     'original_msg': item,
                     'recipients': recipients,
                 }
 
-                if hashed_id == email_id:
+                if resolved_id == email_id or legacy_id == email_id:
                     return email_dict
 
                 # Secondary match if message_id matches
                 if message_id and item.message_id:
-                    c1 = (message_id or '').strip().strip('<>')
-                    c2 = (item.message_id or '').strip().strip('<>')
+                    c1 = normalize_message_id(message_id)
+                    c2 = normalize_message_id(item.message_id)
                     if c1 and c1 == c2 and not fallback_match:
                         fallback_match = email_dict
 
                 # Tertiary match if subject and sender match
                 if subject and sender and not fallback_match:
-                    item_sender = item.sender.email_address if item.sender else ""
                     if (item.subject or '').strip() == subject.strip() and item_sender.lower() == sender.lower():
                         fallback_match = email_dict
 
